@@ -35,8 +35,10 @@ mod run;
 mod types;
 use doc::*;
 mod waiting;
+#[cfg(not(feature = "managed"))]
+pub(crate) use run::child_env;
 use run::*;
-pub(crate) use run::{child_env, not_stopping, tail, terminal_env};
+pub(crate) use run::{not_stopping, tail, terminal_env};
 pub use types::*;
 use waiting::*;
 

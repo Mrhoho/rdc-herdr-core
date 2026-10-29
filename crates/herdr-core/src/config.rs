@@ -9,6 +9,10 @@ use std::time::Duration;
 pub struct Config {
     /// Executable and arguments for new shells (default: this machine's shell).
     pub shell: Option<Vec<String>>,
+    /// Managed program defaults, applied before per-call identity and unset.
+    #[cfg(feature = "managed")]
+    #[serde(default)]
+    pub programs: Programs,
     /// The chord that detaches `hc attach`: `ctrl+<key>`, default `ctrl+\`.
     pub detach_key: Option<String>,
     /// Seconds a `wait` runs before it checks in (default 180).
@@ -46,6 +50,15 @@ fn seconds<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Duration>, D
                 .map_err(|_| serde::de::Error::custom("seconds must be finite and fit in a duration"))
         })
         .transpose()
+}
+
+#[cfg(feature = "managed")]
+#[derive(Deserialize, Default)]
+pub struct Programs {
+    #[serde(default)]
+    pub env: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub unset: Vec<String>,
 }
 
 impl Config {
