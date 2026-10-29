@@ -774,3 +774,13 @@ pub struct RunResult {
 pub struct TemplatesResult {
     pub templates: Vec<crate::templates::TemplateInfo>,
 }
+
+#[cfg(not(feature = "managed"))]
+pub type ManagementParams = Empty;
+
+#[cfg(feature = "managed")]
+#[derive(Deserialize, JsonSchema)]
+pub struct ManagementParams {
+    /// Explicit owner capability. Never read from an environment variable or token file.
+    pub owner_token: Option<String>,
+}

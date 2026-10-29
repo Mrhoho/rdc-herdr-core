@@ -61,18 +61,24 @@ methods! { Ctx<'_>;
     "hello" => hello, HelloParams => HelloResult,
         "Handshake: protocol generation, core identity, methods and features. `framed: true` switches the connection to framed mode.",
         errors ["unsupported_generation"];
+    #[cfg(feature = "managed")]
+    "server.authorize" => server_authorize, ManagementParams => Empty,
+        "Check the explicit owner capability before management or a binary swap.", errors ["managed_by_owner"];
+    #[cfg(feature = "managed")]
+    "server.start" => server_start, ManagementParams => StatusResult,
+        "Authorize an explicit start against an already running managed core.", errors ["managed_by_owner"];
     "server.status" => server_status, Empty => StatusResult,
         "This core's identity, version, pid, uptime, holder and terminal counts.",
         errors [];
-    "server.stop" => server_stop, Empty => StopResult,
-        "Stop the core and its programs. Kept terminals remain pending and get new shells when the core next starts.",
-        errors [];
-    "server.restart" => server_restart, Empty => StopResult,
-        "Planned restart (e.g. after an update): screens are saved, programs keep running, the next core adopts them.",
-        errors [];
+    "server.stop" => server_stop, ManagementParams => StopResult,
+        "Stop the core and its programs. Kept terminals remain pending and get new shells when the core next starts. Managed builds require an explicit owner token.",
+        errors ["managed_by_owner"];
+    "server.restart" => server_restart, ManagementParams => StopResult,
+        "Planned restart (e.g. after an update): screens are saved, programs keep running, the next core adopts them. Managed builds require an explicit owner token.",
+        errors ["managed_by_owner"];
     "terminal.run" => terminal_run, RunParams => RunResult,
         "Start a program in a new terminal; or, when argv[0] names a template, start its command and send its body plus the rest of argv as the first message once the agent is ready. Returns once it runs (and the first message is sent or not).",
-        errors ["invalid_params", "name_taken", "spawn_failed", "unavailable", "invalid_template", "not_found", "machine_unknown", "config"];
+        errors ["invalid_params", "name_taken", "spawn_failed", "unavailable", "invalid_template", "not_found", "machine_unknown", "config", "managed_program_env"];
     "templates.list" => templates_list, Empty => TemplatesResult,
         "Templates by name and description, so you can pick a role without knowing its command.",
         errors [];
@@ -116,7 +122,7 @@ methods! { Ctx<'_>;
         errors ["not_found", "machine_unknown", "finished", "invalid_params"];
     "machine.exec" => machine_exec, ExecParams => ExecResult,
         "Run one program here or on a machine (`on`) without a terminal; return its exit code and exactly what it wrote (base64). `argv` runs as given, `line` in that machine's shell. Everything it started ends with it: at its exit, at `timeout` (default 60 s), or when the caller goes away. A nonzero exit or a timeout is a result, not an error.",
-        errors ["invalid_params", "spawn_failed", "machine_unknown", "unavailable", "needs_update"];
+        errors ["invalid_params", "spawn_failed", "machine_unknown", "unavailable", "needs_update", "config", "managed_program_env"];
     "file.read" => file_read, FileReadParams => FileReadResult,
         "Read a text file here or on a machine (`on`): lines from `offset`, at most `limit` and 8 MB, and how many it has.",
         errors ["invalid_params", "not_found", "not_text", "io", "machine_unknown", "unavailable", "needs_update"];
@@ -235,12 +241,16 @@ async fn server_status(core: Ctx<'_>, _: Empty) -> Result<StatusResult, RpcError
     })
 }
 
-async fn server_stop(core: Ctx<'_>, _: Empty) -> Result<StopResult, RpcError> {
+async fn server_stop(core: Ctx<'_>, _p: ManagementParams) -> Result<StopResult, RpcError> {
+    #[cfg(feature = "managed")]
+    let _owner_lease = crate::owner::authorize(&core.paths, _p.owner_token.as_deref())?;
     core.shutdown().await;
     Ok(StopResult { stopped: true })
 }
 
-async fn server_restart(core: Ctx<'_>, _: Empty) -> Result<StopResult, RpcError> {
+async fn server_restart(core: Ctx<'_>, _p: ManagementParams) -> Result<StopResult, RpcError> {
+    #[cfg(feature = "managed")]
+    let _owner_lease = crate::owner::authorize(&core.paths, _p.owner_token.as_deref())?;
     core.restart.store(true, std::sync::atomic::Ordering::SeqCst);
     Ok(StopResult { stopped: true })
 }
@@ -715,4 +725,15 @@ async fn machine_rm(core: Ctx<'_>, p: MachineParams) -> Result<RemoveResult, Rpc
 
 async fn rpc_discover(_: Ctx<'_>, _: Empty) -> Result<serde_json::Value, RpcError> {
     Ok(openrpc())
+}
+
+#[cfg(feature = "managed")]
+async fn server_authorize(core: Ctx<'_>, p: ManagementParams) -> Result<Empty, RpcError> {
+    let _owner_lease = crate::owner::authorize(&core.paths, p.owner_token.as_deref())?;
+    Ok(Empty {})
+}
+#[cfg(feature = "managed")]
+async fn server_start(core: Ctx<'_>, p: ManagementParams) -> Result<StatusResult, RpcError> {
+    let _owner_lease = crate::owner::authorize(&core.paths, p.owner_token.as_deref())?;
+    server_status(core, Empty {}).await
 }

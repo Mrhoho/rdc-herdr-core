@@ -1514,8 +1514,16 @@
       }
     },
     {
-      "description": "Stop the core and its programs. Kept terminals remain pending and get new shells when the core next starts.",
-      "errors": [],
+      "description": "Stop the core and its programs. Kept terminals remain pending and get new shells when the core next starts. Managed builds require an explicit owner token.",
+      "errors": [
+        {
+          "code": -32000,
+          "data": {
+            "kind": "managed_by_owner"
+          },
+          "message": "managed_by_owner"
+        }
+      ],
       "name": "server.stop",
       "paramStructure": "by-name",
       "params": [],
@@ -1527,8 +1535,16 @@
       }
     },
     {
-      "description": "Planned restart (e.g. after an update): screens are saved, programs keep running, the next core adopts them.",
-      "errors": [],
+      "description": "Planned restart (e.g. after an update): screens are saved, programs keep running, the next core adopts them. Managed builds require an explicit owner token.",
+      "errors": [
+        {
+          "code": -32000,
+          "data": {
+            "kind": "managed_by_owner"
+          },
+          "message": "managed_by_owner"
+        }
+      ],
       "name": "server.restart",
       "paramStructure": "by-name",
       "params": [],
@@ -1597,6 +1613,13 @@
             "kind": "config"
           },
           "message": "config"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "managed_program_env"
+          },
+          "message": "managed_program_env"
         }
       ],
       "name": "terminal.run",
@@ -2848,6 +2871,20 @@
             "kind": "needs_update"
           },
           "message": "needs_update"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "config"
+          },
+          "message": "config"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "managed_program_env"
+          },
+          "message": "managed_program_env"
         }
       ],
       "name": "machine.exec",

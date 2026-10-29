@@ -168,3 +168,17 @@ paths start at your current folder. Prefer explicit paths for remote work.
   execute outside hc.
 
 `hc build-info --json` prints this binary’s distribution identity locally, without connecting to or starting a core.
+
+
+## Nearshell managed distribution
+
+In a Nearshell managed build, use `nearshell-hc`; paths are compiled for the
+current App distribution and HC_SESSION/HC_SOCKET are refused. Ordinary commands
+work against the running core, but only Nearshell's owner can start, stop,
+restart or update it (`managed_by_owner` on refusal). Do not read or discover an
+owner token from disk. Per-call environment overrides accept only TERM,
+TERM_PROGRAM, TERM_PROGRAM_VERSION and COLORTERM. Program environment defaults
+and removals come from the owner's `[programs] env/unset` config; violations
+return `managed_program_env`. Run/keep have fresh terminal identity, exec does
+not. These restrictions do not apply to upstream/default builds. Launcher and
+owner integration details are in `docs/nearshell-build.md` in the source tree.

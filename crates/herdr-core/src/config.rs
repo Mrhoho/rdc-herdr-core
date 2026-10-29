@@ -6,6 +6,9 @@ use std::path::Path;
 
 #[derive(Deserialize, Default)]
 pub struct Config {
+    /// SHA-256 verifier only; never a plaintext owner token. Managed builds only.
+    #[cfg(feature = "managed")]
+    pub owner_token_sha256: Option<String>,
     /// Managed program defaults, applied before per-call identity and unset.
     #[cfg(feature = "managed")]
     #[serde(default)]

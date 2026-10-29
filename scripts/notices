@@ -14,7 +14,7 @@ out=crates/herdr-core/THIRD-PARTY-NOTICES
         printf '\n==== %s\n\n' "${part#*:}"
         cat "distribution/notices/${part%%:*}.txt"
     done
-    cargo metadata --format-version 1 --locked | jq -r '.packages[] | select(.source != null) | "\(.name) \(.version)\t\(.license)\t\(.manifest_path)"' | sort |
+    cargo metadata --format-version 1 --locked --all-features | jq -r '.packages[] | select(.source != null) | "\(.name) \(.version)\t\(.license)\t\(.manifest_path)"' | sort |
         while IFS="$(printf '\t')" read -r crate license manifest; do
             dir=$(dirname "$manifest")
             printf '\n==== %s (%s)\n\n' "$crate" "$license"
@@ -28,5 +28,5 @@ out=crates/herdr-core/THIRD-PARTY-NOTICES
                 cat "$dir/$extra"
             done
         done
-} >"$out"
+} | tr -d '\r' >"$out"
 echo "wrote $out ($(wc -c <"$out") bytes)"

@@ -165,6 +165,13 @@ fn the_build_is_named_by_the_linkers_build_id() {
 }
 
 pub fn spawn_core(paths: &Paths) -> Result<(), RpcError> {
+    if cfg!(feature = "managed") {
+        return Err(RpcError::new(
+            "managed_by_owner",
+            "this core is managed by Nearshell",
+            "open Nearshell to start its core",
+        ));
+    }
     spawn_detached(paths, &["serve"], "core.log").map_err(|e| unavailable(format!("cannot start core: {e}")))
 }
 
@@ -175,6 +182,12 @@ pub fn spawn_detached(paths: &Paths, args: &[&str], log: &str) -> std::io::Resul
     let log = paths.state.join(log);
     let exe = EXE.get().cloned().map_or_else(std::env::current_exe, Ok)?;
     let mut cmd = Command::new(exe);
+    #[cfg(feature = "managed")]
+    if args.first() == Some(&"serve") {
+        let token = args.windows(2).find(|pair| pair[0] == "--owner-token").map(|pair| pair[1]);
+        crate::owner::authorize(paths, token).map_err(|_| std::io::Error::other("managed_by_owner"))?;
+        cmd.env_clear().envs(crate::owner::launch_env(paths).map_err(|_| std::io::Error::other("managed_by_owner"))?);
+    }
     // A core or holder started from inside a terminal is not that terminal's:
     // ending the terminal must not end them.
     cmd.args(args).env_remove(crate::sweep::VAR).env(crate::sweep::RUNTIME, "1");

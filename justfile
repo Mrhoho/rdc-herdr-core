@@ -111,3 +111,8 @@ release-publish version:
     git tag v{{version}}
     git push origin v{{version}}
     @echo "v{{version}} tagged: the release workflow builds and publishes it"
+
+# Managed macOS contract tests, including an independent default-build hc.
+[unix]
+managed-check:
+    sh scripts/check-managed.sh

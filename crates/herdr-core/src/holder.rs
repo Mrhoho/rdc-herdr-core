@@ -375,6 +375,11 @@ impl Holder {
             if st.terms.is_empty() {
                 self.exit();
             }
+            // Managed holders preserve PTYs for an owner to adopt; they never
+            // possess a token and must not silently launch a replacement core.
+            if cfg!(feature = "managed") {
+                continue;
+            }
             let now = Instant::now();
             st.restarts.retain(|t| now.duration_since(*t) < Duration::from_secs(300));
             let backoff = self.grace * 2u32.pow(st.restarts.len().min(6) as u32);

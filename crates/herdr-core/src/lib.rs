@@ -38,3 +38,6 @@ pub mod wire;
 
 #[cfg(feature = "managed")]
 pub mod program_env;
+
+#[cfg(feature = "managed")]
+pub mod owner;

@@ -1,6 +1,6 @@
 # Nearshell 构建与 CLI 契约
 
-状态：A1 已实现；A2–A5 尚未实现，当前 managed 构建不能作为完整受管发行版交付。日期：2026-10-30。
+状态：A1、A2 已实现；A3–A5 尚未实现，当前 managed 构建不能作为完整受管发行版交付。日期：2026-10-30。
 
 目标：保持默认构建的上游命令与寻址行为，提供独立的 Nearshell 分发身份和私有路径。连接生命周期修复及附加的 build 字段适用于两种构建。
 
@@ -13,7 +13,7 @@ Nearshell 使用 `cargo build --locked --features managed --bin nearshell-hc`（
 | 变量 | 契约 |
 |---|---|
 | `NEARSHELL_CORE_COMMIT` | 完整的 40 位 Git commit；发行构建由构建脚本保证源码与之匹配 |
-| `NEARSHELL_CORE_PATCHSET` | 补丁契约版本；A1 不能声称具备 A2–A5 的能力 |
+| `NEARSHELL_CORE_PATCHSET` | 补丁契约版本；A2 不能声称具备 A3–A5 的能力 |
 | `NEARSHELL_CORE_RELEASE_SEQ` | 分配给该发行物的正整数，单调递增；不从 semver 推断 |
 | `NEARSHELL_CORE_CONFIG` | `dev` 或 `release` |
 | `NEARSHELL_CORE_BUNDLE_ID` | 对应 App 的 bundle ID；Dev 必须与 Release 分开 |
@@ -36,7 +36,7 @@ HC_SESSION、HC_SOCKET 只要存在（包括空值）就返回 `managed_address_
 
 ## 命名与隔离
 
-managed CLI 的版本前缀、help、skill、固定提示与内置模板说明使用 `nearshell-hc`。用户模板、程序输出、协议标签与数据键保持原值。远端拨号不再回退 `hc` 或 `herdr-core`；上游下载器及向上游安装目录复制二进制的功能返回 `managed_distribution`，防止写入用户自装副本。A2 的 owner 鉴权、禁止自启及程序环境契约仍未实现。
+managed CLI 的版本前缀、help、skill、固定提示与内置模板说明使用 `nearshell-hc`。用户模板、程序输出、协议标签与数据键保持原值。远端拨号不再回退 `hc` 或 `herdr-core`；上游下载器及向上游安装目录复制二进制的功能返回 `managed_distribution`，防止写入用户自装副本。A2 的 owner 鉴权、禁止自启及程序环境契约见下文。
 
 ## 连接与验证
 
@@ -77,3 +77,73 @@ terminal identity, socket, scope and PWD; exec adds only its scope and PWD.
 Keep re-reads configuration, re-computes terminal identity, and persists only the
 per-call override in `restart_env`. Invalid new configuration leaves recovery
 pending rather than spawning with private/default environment values.
+
+## Managed owner lifecycle (P4)
+
+Managed is a build feature, not a runtime flag that a CLI caller can disable.
+Default builds keep upstream auto-start and management behavior. Managed ordinary
+commands work while core is alive; they never auto-start it. Holders keep PTYs
+alive after core loss, but wait for an owner to start a new core.
+
+The App launcher must implement this contract (all files under the compiled
+AppSupport root, not its socket cleanup directory):
+
+1. Open `owner.lock` without replacing its inode; acquire exclusive nonblocking
+   flock and hold it for the App lifetime. A second App is a client only.
+2. Before replacing a verifier, acquire exclusive `management.lock` (never
+   replace its inode). Every accepted management operation holds a shared lease
+   on this lock, including server validation; rotation waits for those operations.
+   CLI lifecycle commands additionally acquire exclusive `lifecycle.lock` to
+   serialize start/stop/restart/update. Direct App lifecycle RPCs must similarly
+   hold a shared management lease and exclusive lifecycle lock through the reply
+   and service EOF. Release both before invoking a CLI lifecycle command, which
+   acquires them itself. A new owner begins work only after verifier publication.
+3. Generate 32 random bytes, encode as 64 hex characters, keep this token in
+   owner memory only. Atomically write its lowercase SHA-256 hex digest into
+   top-level `owner_token_sha256` in private config.toml. This is a verifier,
+   not a token file. Rotate it on every owner takeover, including a surviving
+   core; old tokens then fail. Release management.lock after config publication.
+4. Invoke `nearshell-hc server start|stop|restart --owner-token TOKEN` or
+   `nearshell-hc update --from FILE --owner-token TOKEN`. The option is explicit,
+   never read from environment/config/token files. Do not log commands containing
+   it. The server requires the same `owner_token` parameter on stop/restart,
+   start (against an existing core), and `server.authorize` (pre-swap check).
+
+Authorization requires both a matching verifier and a currently locked
+owner.lock. Missing/invalid capability, orphaned verifier, or conflicting CLI
+management returns `managed_by_owner`, with fixed text. Plain and framed RPC use
+identical checks before lifecycle side effects. Each CLI operation checks the
+live server as well as local config. `server.status` remains public.
+
+Owner start/restart strips all inherited HC_* and XDG_* plus terminal identity,
+then sets only the private XDG_CONFIG_HOME/XDG_STATE_HOME (HC_RUNTIME is added
+internally for the daemon). Other launcher environment values form the program
+base. Programs receive their user XDG via P3. Direct hidden `serve` requires both
+explicit authorization and this clean environment. The owner token is never in
+program/holder environments or restart_env. `server::serve()` without a token
+cannot start a managed core.
+
+Managed update only replaces `<root>/bin/nearshell-hc`. It rejects other config
+identities, lower releaseSeq, or unequal identities at equal releaseSeq, even
+with --force. It reads candidate, installed and running identities; checks the
+staged candidate and installed identity again; then revalidates local and live
+server authorization immediately before the atomic rename. Refused authorization
+or incompatible build leaves installed bytes unchanged. Already-replaced copies
+can be restarted explicitly; PTYs remain in holders. A failure after rename is
+reported (it is not rolled back); the App's three-party recovery decision in the
+design handles that state. Only --from is supported; upstream distribution paths
+remain disabled. Build identity is not a signature/hash check: the App must
+validate its bundled artifact before passing it to update (A5).
+
+This is a cooperative same-user owner capability, not a sandbox against arbitrary
+code running as the same OS user. The owner must follow the shared/exclusive lease and
+lifecycle lock ordering above; a command authorized before owner death may
+finish, and the next owner waits for that operation before rotating the verifier.
+Group B must implement the lock lifetime and atomic config publication above.
+
+Run `just managed-check` on macOS with the same Zig as `just check`. It freezes a
+default-build hc in scratch before compiling managed-test; the cross-distribution
+test starts that hc with a second scratch XDG/config/socket set. It never touches
+the installed hc or the default user session. Ordinary `cargo test --features
+managed-test --lib --test managed` skips only that fixture-dependent test and the
+existing upstream namespace helper. Do not distribute managed-test builds.
