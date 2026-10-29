@@ -2,6 +2,7 @@
 //! params and results are in `api/types.rs`; `run` and the waits have their
 //! own files.
 
+use crate::branding::COMMAND as CLI_NAME;
 use crate::holder_proto as proto;
 use crate::rpc::{RpcError, methods};
 use crate::runtime::{Core, now_ms};
@@ -47,7 +48,9 @@ use waiting::*;
 /// The whole API as an OpenRPC document, generated from the method table.
 pub fn openrpc() -> serde_json::Value {
     let (methods, defs) = discover();
-    crate::rpc::openrpc(methods, defs, &version(), GENERATION)
+    let mut schema = crate::rpc::openrpc(methods, defs, &version(), GENERATION);
+    crate::branding::schema(&mut schema);
+    schema
 }
 
 /// One call: the core plus the connection it came on.
@@ -199,7 +202,11 @@ fn resolve(core: &Core, address: &str) -> Result<u32, RpcError> {
 
 fn record(core: &Core, id: u32) -> Result<Terminal, RpcError> {
     core.lock().reg.terminals.get(&id).cloned().ok_or_else(|| {
-        RpcError::new("not_found", format!("{} was removed", crate::terminals::address(id)), "see `hc ls --all`")
+        RpcError::new(
+            "not_found",
+            format!("{} was removed", crate::terminals::address(id)),
+            format!("see `{CLI_NAME} ls --all`"),
+        )
     })
 }
 
@@ -465,7 +472,7 @@ async fn terminal_attach(core: Ctx<'_>, p: AttachParams) -> Result<AttachResult,
         return Err(RpcError::new(
             "needs_framed",
             "attach needs a framed connection",
-            "send hello with framed: true first, or use `hc attach`",
+            format!("send hello with framed: true first, or use `{CLI_NAME} attach`"),
         ));
     };
     conn.admit(&core.lock())?;
@@ -695,13 +702,15 @@ async fn machine_add(core: Ctx<'_>, p: MachineAddParams) -> Result<crate::machin
             return Err(RpcError::new(
                 "already_added",
                 format!("{} answers as {}'s core: it looks like a copy of {}", machine.target, m.name, m.name),
-                "on the copy, stop hc and delete its core.json in hc's state folder, then add it again",
+                format!(
+                    "on the copy, stop {CLI_NAME} and delete its core.json in {CLI_NAME}'s state folder, then add it again"
+                ),
             ));
         }
         return Err(RpcError::new(
             "already_added",
             format!("that core is already added as {}", m.name),
-            format!("rename it: hc machine rename {} <name>", m.name),
+            format!("rename it: {CLI_NAME} machine rename {} <name>", m.name),
         ));
     }
     st.machines.push(machine.clone());

@@ -25,7 +25,7 @@ fn late(machine: &str, what: &str, deadline: Duration) -> RpcError {
     RpcError::new(
         "unavailable",
         format!("{machine} didn't answer {what} within {} s", deadline.as_secs()),
-        "it may be busy or stuck; hc machine ls shows its line",
+        format!("it may be busy or stuck; {CLI_NAME} machine ls shows its line"),
     )
 }
 

@@ -1,5 +1,6 @@
 //! Keep implicit SSH startup from reserving a desktop user's core at high integrity.
 
+use crate::branding::COMMAND as CLI_NAME;
 use crate::rpc::RpcError;
 use std::io;
 use std::mem::{size_of, zeroed};
@@ -22,7 +23,9 @@ pub fn check_autostart() -> Result<(), RpcError> {
     Err(RpcError::new(
         "unavailable",
         message,
-        "open Herdr on that Windows machine, or run 'hc server start' there in a normal desktop terminal; then reconnect",
+        format!(
+            "open Herdr on that Windows machine, or run '{CLI_NAME} server start' there in a normal desktop terminal; then reconnect"
+        ),
     ))
 }
 

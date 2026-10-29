@@ -86,8 +86,8 @@ pub(super) async fn forward_once(core: &Core, m: &Machine, method: &str, mut par
     if method == "terminal.run" && own_shell && !line.features.iter().any(|f| f == "shell") {
         return Err(RpcError::new(
             "needs_update",
-            format!("{}'s hc is older and can't pick its own shell", m.name),
-            format!("hc machine update {}", m.name),
+            format!("{}'s {CLI_NAME} is older and can't pick its own shell", m.name),
+            format!("{CLI_NAME} machine update {}", m.name),
         ));
     }
     let grant = RunGrant::start(core, m, method, &params);
@@ -98,8 +98,8 @@ pub(super) async fn forward_once(core: &Core, m: &Machine, method: &str, mut par
     let reply = result.map_err(|e| match e.kind.as_str() {
         "unknown_method" => RpcError::new(
             "needs_update",
-            format!("{}'s hc is older and has no {method}", m.name),
-            format!("hc machine update {}", m.name),
+            format!("{}'s {CLI_NAME} is older and has no {method}", m.name),
+            format!("{CLI_NAME} machine update {}", m.name),
         ),
         _ => e,
     })?;

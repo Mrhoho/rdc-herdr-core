@@ -882,3 +882,44 @@ pub mod console {
         (n > 0).then(|| buf[..n as usize].to_vec())
     }
 }
+
+/// Current account's home, independent of a terminal program's HOME/XDG.
+#[cfg(all(feature = "managed", not(feature = "managed-test")))]
+pub fn account_home() -> io::Result<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut buffer = vec![0u8; 65536];
+    let mut found = std::ptr::null_mut();
+    let code =
+        unsafe { libc::getpwuid_r(libc::getuid(), &mut entry, buffer.as_mut_ptr().cast(), buffer.len(), &mut found) };
+    if code != 0 || found.is_null() || entry.pw_dir.is_null() {
+        return Err(io::Error::other("account home unavailable"));
+    }
+    let home = unsafe { std::ffi::CStr::from_ptr(entry.pw_dir) };
+    let path = PathBuf::from(std::ffi::OsStr::from_bytes(home.to_bytes()));
+    if !path.is_absolute() {
+        return Err(io::Error::other("invalid account home"));
+    }
+    Ok(path)
+}
+
+#[cfg(all(feature = "managed", not(feature = "managed-test")))]
+pub fn managed_socket_dir(suffix: &str) -> PathBuf {
+    PathBuf::from(format!("/tmp/nearshell-{}-{suffix}", unsafe { libc::getuid() }))
+}
+
+/// Never repair or follow an existing directory of unknown ownership/mode.
+#[cfg(feature = "managed")]
+pub fn managed_private_dir(path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+    match std::fs::DirBuilder::new().mode(0o700).create(path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(e),
+    }
+    let meta = std::fs::symlink_metadata(path)?;
+    if !meta.is_dir() || meta.uid() != unsafe { libc::getuid() } || meta.mode() & 0o777 != 0o700 {
+        return Err(io::Error::other("insecure managed socket directory"));
+    }
+    Ok(())
+}

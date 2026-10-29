@@ -1,6 +1,7 @@
 //! Other machines: their profiles, and the pipe to the core on each.
 
 use crate::addr::check_name;
+use crate::branding::COMMAND as CLI_NAME;
 use crate::rpc::RpcError;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -57,8 +58,8 @@ impl Reach<'_> {
     /// Says how to add it again, for hints.
     fn add(&self) -> String {
         match self.via {
-            true => crate::platform::via_add_hint(self.target),
-            false => format!("hc machine add {}", self.target),
+            true => crate::branding::text(&crate::platform::via_add_hint(self.target)),
+            false => format!("{CLI_NAME} machine add {}", self.target),
         }
     }
 
@@ -91,7 +92,7 @@ impl Reach<'_> {
 pub fn unknown(machines: &[Machine], name: &str) -> crate::rpc::RpcError {
     let names: Vec<&str> = machines.iter().map(|m| m.name.as_str()).collect();
     let hint = if names.is_empty() {
-        "no machines yet: hc machine add <ssh-target>".into()
+        format!("no machines yet: {CLI_NAME} machine add <ssh-target>")
     } else {
         format!("machines: {}", names.join(", "))
     };
@@ -249,7 +250,9 @@ fn pipe(
     session: Option<&str>,
     windows: bool,
 ) -> Result<tokio::process::Command, RpcError> {
-    let remote = if windows {
+    let remote = if cfg!(feature = "managed") {
+        format!("nearshell-hc connect{}", session.map(|s| format!(" --session {s}")).unwrap_or_default())
+    } else if windows {
         let session = session.map(|s| format!(" --session {s}")).unwrap_or_default();
         format!(
             "cmd /d /c \"if exist {WINDOWS_HC} ({WINDOWS_HC} connect{session}) else (echo {NOT_HERE} 1>&2 & exit /b 127)\""
@@ -379,8 +382,8 @@ async fn dial_once(
             if status == Some(127) || err.contains(NOT_HERE) {
                 return Err(RpcError::new(
                     "hc_missing",
-                    format!("hc is not installed on {target}"),
-                    format!("in a terminal, `{}` offers to copy this hc there", to.add()),
+                    format!("{CLI_NAME} is not installed on {target}"),
+                    format!("in a terminal, `{}` offers to copy this {CLI_NAME} there", to.add()),
                 ));
             }
             if wants_login(&err) {
@@ -407,7 +410,7 @@ async fn dial_once(
     match reply.get("error") {
         Some(e) if e["data"]["kind"] == "unsupported_generation" => Err(RpcError::new(
             "incompatible",
-            format!("hc on {target} speaks another protocol generation"),
+            format!("{CLI_NAME} on {target} speaks another protocol generation"),
             format!("in a terminal, `{}` offers to update it", to.add()),
         )),
         Some(e) => Err(RpcError::from_json(e)),
@@ -473,6 +476,7 @@ fn run_raw(
 /// and restarts hc there in `session`, so terminals there keep running.
 /// Returns what the installed one says it is.
 pub fn install(paths: &crate::paths::Paths, to: Reach, session: Option<&str>) -> Result<String, RpcError> {
+    crate::branding::upstream_distribution()?;
     check_target(to)?;
     let target = to.target;
     if let Some(s) = session {
@@ -489,7 +493,11 @@ pub fn install(paths: &crate::paths::Paths, to: Reach, session: Option<&str>) ->
     };
     if windows {
         if to.via {
-            return Err(RpcError::new("install_failed", format!("{target} runs Windows"), "install hc there yourself"));
+            return Err(RpcError::new(
+                "install_failed",
+                format!("{target} runs Windows"),
+                format!("install {CLI_NAME} there yourself"),
+            ));
         }
         WINDOWS.lock().unwrap_or_else(|p| p.into_inner()).push(target.to_string());
         return install_windows(paths, target, session);
@@ -515,8 +523,8 @@ pub fn install(paths: &crate::paths::Paths, to: Reach, session: Option<&str>) ->
         let not_released = |_| {
             RpcError::new(
                 "install_failed",
-                format!("{target} is {there}, and hc {version} has no release to download"),
-                "install hc there yourself",
+                format!("{target} is {there}, and {CLI_NAME} {version} has no release to download"),
+                format!("install {CLI_NAME} there yourself"),
             )
         };
         let m = crate::releases::manifest(Some(version), &scratch.0).map_err(not_released)?;
@@ -545,7 +553,7 @@ pub fn install(paths: &crate::paths::Paths, to: Reach, session: Option<&str>) ->
     let script = format!(
         "set -e; d=$HOME/.local/bin; mkdir -p $d; {guard}rm -f $d/.herdr-core.new.*; t=$d/.herdr-core.new.$$; \
          head -c {n} > $t; [ $(($(wc -c < $t))) -eq {n} ] || {{ rm -f $t; echo \"the copy arrived incomplete\" >&2; exit 3; }}; \
-         chmod 755 $t; $t --version > /dev/null || {{ rm -f $t; echo \"this hc does not run there\" >&2; exit 4; }}; \
+         chmod 755 $t; $t --version > /dev/null || {{ rm -f $t; echo \"this {CLI_NAME} does not run there\" >&2; exit 4; }}; \
          mv -f $t $d/herdr-core; command -v hc > /dev/null 2>&1 || [ -e $d/hc ] || ln -s herdr-core $d/hc; \
          {session}$d/herdr-core server restart > /dev/null; $d/herdr-core --version"
     );
@@ -586,8 +594,8 @@ fn install_windows(paths: &crate::paths::Paths, target: &str, session: Option<&s
     let m = crate::releases::manifest(Some(version), &scratch.0).map_err(|_| {
         RpcError::new(
             "install_failed",
-            format!("{target} runs Windows, and hc {version} has no release to download"),
-            "install hc there yourself",
+            format!("{target} runs Windows, and {CLI_NAME} {version} has no release to download"),
+            format!("install {CLI_NAME} there yourself"),
         )
     })?;
     let zip = crate::releases::fetch(&m, "windows-x86_64", &scratch.0)?;
@@ -608,7 +616,7 @@ fn install_windows(paths: &crate::paths::Paths, target: &str, session: Option<&s
     if !out.status.success() {
         return Err(RpcError::new(
             "install_failed",
-            format!("copying hc to {target}: {}", String::from_utf8_lossy(&out.stderr).trim()),
+            format!("copying {CLI_NAME} to {target}: {}", String::from_utf8_lossy(&out.stderr).trim()),
             "nothing was changed there",
         ));
     }
@@ -665,6 +673,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "managed"))]
     fn a_windows_box_gets_one_line_cmd_and_powershell_read_alike() {
         let paths = crate::paths::Paths::from_env().unwrap();
         let cmd = pipe(&paths, Reach { target: "winbox", via: false }, Some("s1"), true).unwrap();

@@ -4,6 +4,7 @@ use crate::api::{
     AttachParams, ExecParams, InterruptParams, KeysParams, LabelParams, ListParams, PutParams, ReadParams, RunParams,
     SendParams, SubscribeParams, TerminalParams, WaitParams,
 };
+use crate::branding::COMMAND as CLI_NAME;
 use crate::client;
 use crate::paths::Paths;
 use crate::picker;
@@ -26,7 +27,7 @@ use server::*;
 use update::*;
 
 #[derive(Parser)]
-#[command(name = "hc", version, about = "herdr-core: a terminal runtime for coding agents")]
+#[command(name = crate::branding::COMMAND, version, about = "herdr-core: a terminal runtime for coding agents")]
 struct Cli {
     /// JSON output even in a terminal.
     #[arg(long, global = true)]
@@ -133,17 +134,44 @@ pub fn command_names() -> Vec<String> {
         .collect()
 }
 
+// Clap derives help from doc comments; brand that authored text before parsing.
+fn branded_command(mut cmd: clap::Command) -> clap::Command {
+    if !cfg!(feature = "managed") {
+        return cmd;
+    }
+    if let Some(text) = cmd.get_about() {
+        let text = crate::branding::text(&text.to_string());
+        cmd = cmd.about(text);
+    }
+    if let Some(text) = cmd.get_long_about() {
+        let text = crate::branding::text(&text.to_string());
+        cmd = cmd.long_about(text);
+    }
+    cmd = cmd.mut_args(|mut arg| {
+        if let Some(text) = arg.get_help() {
+            let text = crate::branding::text(&text.to_string());
+            arg = arg.help(text);
+        }
+        if let Some(text) = arg.get_long_help() {
+            let text = crate::branding::text(&text.to_string());
+            arg = arg.long_help(text);
+        }
+        arg
+    });
+    cmd.mut_subcommands(branded_command)
+}
+
 pub fn main() -> i32 {
     let daemon = crate::platform::daemon_startup();
     client::remember_exe();
     let args: Vec<_> = if daemon { vec!["serve".into()] } else { std::env::args_os().skip(1).collect() };
     match args.iter().map(|a| a.to_str()).collect::<Vec<_>>().as_slice() {
         [Some("--help" | "-h" | "help")] => {
-            print!("{HELP}");
+            print!("{}", crate::branding::text(HELP));
             return 0;
         }
         [Some("--skill")] => {
-            print!("{SKILL}");
+            print!("{}", crate::branding::text(SKILL));
             return 0;
         }
         [Some("--licenses")] => {
@@ -154,10 +182,13 @@ pub fn main() -> i32 {
     }
     // Before parsing we can only guess (for how to print a parse error).
     let piped = !std::io::stdout().is_terminal();
-    let cli = match Cli::try_parse_from(std::env::args_os().take(1).chain(args.iter().cloned())) {
+    use clap::{CommandFactory, FromArgMatches};
+    let cli = match branded_command(Cli::command())
+        .try_get_matches_from(std::env::args_os().take(1).chain(args.iter().cloned()))
+        .and_then(|m| Cli::from_arg_matches(&m)) {
         Ok(cli) => cli,
         Err(e) if !e.use_stderr() || !(piped || args.iter().any(|a| a == "--json")) => e.exit(),
-        Err(e) => return fail(&RpcError::new("usage", usage_message(&e), "see `hc --help`"), true),
+        Err(e) => return fail(&RpcError::new("usage", usage_message(&e), format!("see `{CLI_NAME} --help`")), true),
     };
     // A template's trailing flags may include --json: parse them before choosing how to print.
     let (cmd, asked) = match cli.cmd {
@@ -264,7 +295,13 @@ fn bare(paths: &Paths, json: bool) -> Result<Option<Out>, RpcError> {
     let list = call(paths, "terminal.list", json!({}))?;
     if !interactive(json) {
         let mut r = list;
-        r["commands"] = json!(["hc run <cmd>", "hc ls", "hc read <t>", "hc attach <t>", "hc --skill"]);
+        r["commands"] = json!([
+            &format!("{CLI_NAME} run <cmd>"),
+            &format!("{CLI_NAME} ls"),
+            &format!("{CLI_NAME} read <t>"),
+            &format!("{CLI_NAME} attach <t>"),
+            &format!("{CLI_NAME} --skill")
+        ]);
         let human = table(&r);
         return Ok(Some(Out { json: r, human }));
     }
@@ -467,12 +504,12 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcErro
             let r = call("terminal.read", to(&p))?;
             let mut human = r["text"].as_str().unwrap_or_default().to_string();
             if r["why"] == "working" {
-                human.push_str("\n[hc] only its screen: it is working; read again once it stops for its history");
+                human.push_str(&format!("\n[{CLI_NAME}] only its screen: it is working; read again once it stops for its history"));
             } else if let Some(state @ ("blocked" | "error")) = r["why"].as_str() {
                 human
-                    .push_str(&format!("\n[hc] only its screen: it is {state}; history is not scrolled in this state"));
+                    .push_str(&format!("\n[{CLI_NAME}] only its screen: it is {state}; history is not scrolled in this state"));
             } else if r["complete"] == false {
-                human.push_str("\n[hc] incomplete: older output may be missing");
+                human.push_str(&format!("\n[{CLI_NAME}] incomplete: older output may be missing"));
             }
             // Its output is text: plain even when piped, JSON only when asked.
             if !asked {
@@ -572,10 +609,10 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcErro
         }
         Cmd::Server { action: ServerCmd::Stop } => stop(&paths)?,
         Cmd::Update { from: None, version, force } => {
-            let this = format!("hc {}", env!("CARGO_PKG_VERSION"));
+            let this = format!("{CLI_NAME} {}", env!("CARGO_PKG_VERSION"));
             if let Some(v) = &version
                 && !force
-                && !older(&this, &format!("hc {v}"))
+                && !older(&this, &format!("{CLI_NAME} {v}"))
                 && !crate::platform::needs_bundle_update()
             {
                 let human = format!("{this} is already {v} or newer");
@@ -585,24 +622,24 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcErro
             let scratch = crate::releases::Scratch::new()?;
             let requested = version
                 .as_deref()
-                .map(|v| if !force && !older(&this, &format!("hc {v}")) { env!("CARGO_PKG_VERSION") } else { v });
+                .map(|v| if !force && !older(&this, &format!("{CLI_NAME} {v}")) { env!("CARGO_PKG_VERSION") } else { v });
             let m = crate::releases::manifest(requested, &scratch.0)?;
             // Apps and scripts built for this generation would break on another one.
             if m.generation != crate::api::GENERATION && !force {
                 return Err(RpcError::new(
                     "refused",
                     format!(
-                        "hc {} speaks protocol generation {}, this hc {}: apps built for it would stop working",
+                        "{CLI_NAME} {} speaks protocol generation {}, this {CLI_NAME} {}: apps built for it would stop working",
                         m.version,
                         m.generation,
                         crate::api::GENERATION
                     ),
-                    "update the apps that use hc first, then hc update --force",
+                    format!("update the apps that use {CLI_NAME} first, then {CLI_NAME} update --force"),
                 ));
             }
             if version.is_none()
                 && !force
-                && !older(&this, &format!("hc {}", m.version))
+                && !older(&this, &format!("{CLI_NAME} {}", m.version))
                 && !crate::platform::needs_bundle_update()
             {
                 let human = format!("{this} is up to date (latest release: {})", m.version);

@@ -3,6 +3,7 @@
 //! downloads. curl, sha256sum/shasum (Windows: its own crypto) and tar do
 //! the work: no HTTP or crypto code in hc for something run this rarely.
 
+use crate::branding::COMMAND as CLI_NAME;
 use crate::rpc::RpcError;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -49,6 +50,7 @@ fn curl(url: &str, to: &Path) -> Result<(), RpcError> {
 
 /// The latest release's list, or one version's.
 pub fn manifest(version: Option<&str>, scratch: &Path) -> Result<Manifest, RpcError> {
+    crate::branding::upstream_distribution()?;
     let url = match version {
         Some(v) => format!("{}/core/{v}/manifest.json", base()),
         None => format!("{}/core/latest.json", base()),
@@ -96,7 +98,7 @@ pub fn download(m: &Manifest, target: &str, scratch: &Path, bundle: bool) -> Res
     if !ok || !bin.is_file() {
         return Err(RpcError::new(
             "refused",
-            format!("hc {}'s download for {target} holds no herdr-core", m.version),
+            format!("{CLI_NAME} {}'s download for {target} holds no herdr-core", m.version),
             "",
         ));
     }
@@ -109,7 +111,11 @@ pub fn download(m: &Manifest, target: &str, scratch: &Path, bundle: bool) -> Res
 /// the list: its path, still packed.
 pub fn fetch(m: &Manifest, target: &str, scratch: &Path) -> Result<PathBuf, RpcError> {
     let t = m.targets.get(target).ok_or_else(|| {
-        RpcError::new("refused", format!("hc {} has no build for {target}", m.version), "install hc there yourself")
+        RpcError::new(
+            "refused",
+            format!("{CLI_NAME} {} has no build for {target}", m.version),
+            format!("install {CLI_NAME} there yourself"),
+        )
     })?;
     let archive = if target.starts_with("windows") { "zip" } else { "tar.gz" };
     let file = scratch.join(format!("herdr-core-{target}.{archive}"));
@@ -117,7 +123,7 @@ pub fn fetch(m: &Manifest, target: &str, scratch: &Path) -> Result<PathBuf, RpcE
     if sha256(&file).as_deref() != Some(t.sha256.as_str()) {
         return Err(RpcError::new(
             "refused",
-            format!("the download of hc {} for {target} is damaged (checksum mismatch)", m.version),
+            format!("the download of {CLI_NAME} {} for {target} is damaged (checksum mismatch)", m.version),
             "try again",
         ));
     }

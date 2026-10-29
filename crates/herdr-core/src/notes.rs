@@ -1,6 +1,7 @@
 //! Parents and children: news about a child is typed into its parent agent
 //! as a marked note, only when the parent can take it and hasn't seen it.
 
+use crate::branding::COMMAND as CLI_NAME;
 use crate::input::{Step, paste};
 use crate::rpc::RpcError;
 use crate::runtime::{Core, State, now_ms};
@@ -93,7 +94,7 @@ fn note(t: &Terminal, address: &str, last: &[String]) -> String {
         true => ". ".to_string(),
         false => format!(". Last lines:\n{}\n", last.join("\n")),
     };
-    format!("<hc>{address}{name} {what}{gap}{look}: hc read {address}</hc>")
+    format!("<hc>{address}{name} {what}{gap}{look}: {CLI_NAME} read {address}</hc>")
 }
 
 impl Core {
@@ -156,7 +157,11 @@ impl Core {
         }
         match sender.filter(|s| s.reported && target.is_some_and(|t| t.reported)) {
             Some(s) if reach => {
-                format!("<hc from=\"{}\" reach=\"hc send {} when done or stuck\">{text}</hc>", who(s), s.address)
+                format!(
+                    "<hc from=\"{}\" reach=\"{CLI_NAME} send {} when done or stuck\">{text}</hc>",
+                    who(s),
+                    s.address
+                )
             }
             Some(s) => format!("<hc from=\"{}\">{text}</hc>", who(s)),
             None => text.to_string(),
@@ -327,26 +332,29 @@ mod tests {
         });
         t.status.as_mut().unwrap().state = "blocked".into();
         t.status.as_mut().unwrap().kind = Some("permission".into());
-        assert_eq!(note(t, "t1", &[]), "<hc>t1 reviewer is blocked (permission). See: hc read t1</hc>");
+        assert_eq!(
+            note(t, "t1", &[]),
+            format!("<hc>t1 reviewer is blocked (permission). See: {CLI_NAME} read t1</hc>")
+        );
         t.status.as_mut().unwrap().state = "error".into();
         t.status.as_mut().unwrap().msg = format!("rate limited\n{}", "x".repeat(500));
         assert_eq!(
             note(t, "t1", &[]),
-            "<hc>t1 reviewer hit an error: rate limited. See: hc read t1</hc>",
+            format!("<hc>t1 reviewer hit an error: rate limited. See: {CLI_NAME} read t1</hc>"),
             "its first line"
         );
         t.status.as_mut().unwrap().msg.clear();
-        assert_eq!(note(t, "t1", &[]), "<hc>t1 reviewer hit an error. See: hc read t1</hc>");
+        assert_eq!(note(t, "t1", &[]), format!("<hc>t1 reviewer hit an error. See: {CLI_NAME} read t1</hc>"));
         r.finish(id, Some(3), None, "exited", 1);
         assert_eq!(
             note(&r.terminals[&id], "rohan/t1", &[]),
-            "<hc>rohan/t1 reviewer exited (exit 3). Read: hc read rohan/t1</hc>"
+            format!("<hc>rohan/t1 reviewer exited (exit 3). Read: {CLI_NAME} read rohan/t1</hc>")
         );
         let last = last_lines("a\n\n  \nb\x1b[201~\tc\n");
         assert_eq!(last, ["a", "b[201~\tc"], "blanks and control characters dropped");
         assert_eq!(
             note(&r.terminals[&id], "t1", &last),
-            "<hc>t1 reviewer exited (exit 3). Last lines:\na\nb[201~\tc\nRead: hc read t1</hc>"
+            format!("<hc>t1 reviewer exited (exit 3). Last lines:\na\nb[201~\tc\nRead: {CLI_NAME} read t1</hc>")
         );
     }
 
