@@ -10,7 +10,7 @@ name = "herdr-core"
 path = "src/main.rs"
 
 [features]
-managed = []
+managed = ["dep:sha2"]
 # Never distribute this build: path overrides are deliberately test-only.
 managed-test = ["managed"]
 
@@ -20,6 +20,7 @@ path = "src/nearshell_main.rs"
 required-features = ["managed"]
 
 [dependencies]
+sha2 = { version = "0.10", optional = true }
 clap = { version = "4", features = ["derive", "string"] }
 ghostty-vt = { path = "../ghostty-vt" }
 schemars = "1"

@@ -46,3 +46,6 @@ pub(crate) fn test_tmp() -> std::path::PathBuf {
 
 #[cfg(feature = "managed")]
 pub mod program_env;
+
+#[cfg(feature = "managed")]
+pub mod owner;

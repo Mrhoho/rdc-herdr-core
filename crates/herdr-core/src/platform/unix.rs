@@ -178,6 +178,12 @@ pub fn try_lock(file: &File) -> bool {
     unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) == 0 }
 }
 
+/// Managed verifier readers share a lease; the owner rotates it exclusively.
+#[cfg(feature = "managed")]
+pub fn try_shared_lock(file: &File) -> bool {
+    unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) == 0 }
+}
+
 pub fn make_executable(path: &Path) -> io::Result<()> {
     std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o755))
 }

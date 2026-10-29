@@ -208,6 +208,9 @@ pub struct DocSetResult {
 
 #[derive(Deserialize, JsonSchema)]
 pub struct RestartParams {
+    #[cfg(feature = "managed")]
+    #[serde(default)]
+    pub owner_token: Option<String>,
     /// Replacement environment for the next core; requires PATH. Omit to preserve
     /// this core's environment. Normal startup filtering applies; session paths
     /// and service bookkeeping still belong to the next launcher.
@@ -876,4 +879,14 @@ pub struct RunResult {
 #[derive(Serialize, JsonSchema)]
 pub struct TemplatesResult {
     pub templates: Vec<crate::templates::TemplateInfo>,
+}
+
+#[cfg(not(feature = "managed"))]
+pub type ManagementParams = Empty;
+
+#[cfg(feature = "managed")]
+#[derive(Deserialize, JsonSchema)]
+pub struct ManagementParams {
+    /// Explicit owner capability. Never read from an environment variable or token file.
+    pub owner_token: Option<String>,
 }

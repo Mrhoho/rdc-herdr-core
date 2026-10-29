@@ -10,6 +10,9 @@ use std::time::Duration;
 pub struct Config {
     /// Executable and arguments for new shells (default: this machine's shell).
     pub shell: Option<Vec<String>>,
+    /// SHA-256 verifier only; never a plaintext owner token. Managed builds only.
+    #[cfg(feature = "managed")]
+    pub owner_token_sha256: Option<String>,
     /// Managed program defaults, applied before per-call identity and unset.
     #[cfg(feature = "managed")]
     #[serde(default)]

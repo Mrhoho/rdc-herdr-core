@@ -42,8 +42,19 @@ type Reader = BufReader<platform::AsyncRead>;
 type Writer = platform::AsyncWrite;
 
 pub fn serve() -> io::Result<()> {
+    serve_owned(None)
+}
+
+pub fn serve_owned(_owner_token: Option<&str>) -> io::Result<()> {
     platform::raise_nofile_limit();
     let paths = Paths::from_env().map_err(|e| io::Error::other(e.message))?;
+    #[cfg(feature = "managed")]
+    let startup_lease =
+        crate::owner::authorize(&paths, _owner_token).map_err(|_| io::Error::other("managed_by_owner"))?;
+    #[cfg(feature = "managed")]
+    {
+        crate::owner::check_launch_env(&paths).map_err(|_| io::Error::other("managed_by_owner"))?;
+    }
     paths.create_dirs()?;
     let mut lock =
         std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(paths.state.join("core.lock"))?;
@@ -69,6 +80,8 @@ pub fn serve() -> io::Result<()> {
     // Adopt the holder's terminals before anyone can talk to us.
     let core = Core::start(paths, info)?;
     let bound = AsyncListener::bind(&socket)?;
+    #[cfg(feature = "managed")]
+    drop(startup_lease);
 
     tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(async {
         let mut listener = AsyncListener::serve(bound)?;

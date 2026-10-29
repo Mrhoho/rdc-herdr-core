@@ -170,14 +170,14 @@ pub fn share_definitions(mut methods: Vec<Value>, mut defs: Map<String, Value>) 
 
 /// One table gives dispatch, `hello`'s method list and `rpc.discover`.
 macro_rules! methods {
-    ($ctx:ty; $( $name:literal => $handler:path, $params:ty => $result:ty,
+    ($ctx:ty; $( $(#[$meta:meta])* $name:literal => $handler:path, $params:ty => $result:ty,
         $desc:literal, errors [$($err:literal),*]; )*) => {
-        pub const METHOD_NAMES: &[&str] = &[$($name),*];
+        pub const METHOD_NAMES: &[&str] = &[$($(#[$meta])* $name),*];
 
         /// Every method, and the types they share (defined once, under `$defs`).
         pub fn discover() -> (Vec<serde_json::Value>, serde_json::Map<String, serde_json::Value>) {
             let mut generator = schemars::generate::SchemaSettings::draft2020_12().into_generator();
-            let methods: Vec<serde_json::Value> = vec![$(serde_json::json!({
+            let methods: Vec<serde_json::Value> = vec![$($(#[$meta])* serde_json::json!({
                 "name": $name,
                 "description": $desc,
                 "params": generator.subschema_for::<$params>(),
@@ -190,7 +190,7 @@ macro_rules! methods {
         pub async fn dispatch(ctx: $ctx, method: &str, params: serde_json::Value)
             -> Result<serde_json::Value, $crate::rpc::RpcError> {
             match method {
-                $($name => {
+                $($(#[$meta])* $name => {
                     let params: $params = $crate::rpc::parse_params(params)?;
                     let result: $result = $handler(ctx, params).await?;
                     serde_json::to_value(result)

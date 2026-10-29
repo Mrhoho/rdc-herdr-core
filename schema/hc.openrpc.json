@@ -1805,6 +1805,13 @@
             "kind": "config"
           },
           "message": "config"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "managed_program_env"
+          },
+          "message": "managed_program_env"
         }
       ],
       "name": "terminal.run",
@@ -3426,6 +3433,20 @@
             "kind": "needs_update"
           },
           "message": "needs_update"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "config"
+          },
+          "message": "config"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "managed_program_env"
+          },
+          "message": "managed_program_env"
         }
       ],
       "name": "machine.exec",

@@ -15,6 +15,8 @@ use std::io::{IsTerminal, Read};
 
 mod file;
 mod machine;
+#[cfg(feature = "managed")]
+mod managed;
 mod output;
 mod run;
 mod server;
@@ -32,6 +34,10 @@ struct Cli {
     /// JSON output even in a terminal.
     #[arg(long, global = true)]
     json: bool,
+    /// Explicit owner capability for managed lifecycle commands.
+    #[cfg(feature = "managed")]
+    #[arg(long, global = true, hide = true)]
+    owner_token: Option<String>,
     #[command(subcommand)]
     cmd: Option<Cmd>,
 }
@@ -199,7 +205,11 @@ pub fn main() -> i32 {
         cmd => (cmd, cli.json),
     };
     let json = asked || piped;
-    match run(cmd, json, asked) {
+    #[cfg(feature = "managed")]
+    let owner_token = cli.owner_token.as_deref();
+    #[cfg(not(feature = "managed"))]
+    let owner_token = None;
+    match run(cmd, json, asked, owner_token) {
         Ok(Some(out)) => {
             print(&out, json);
             0
@@ -354,7 +364,7 @@ fn bare(paths: &Paths, json: bool) -> Result<Option<Out>, RpcError> {
 
 /// `json`: print JSON (asked, or piped). `asked`: `--json` itself, not a
 /// program's argument that happens to read `--json`.
-fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcError> {
+fn run(cmd: Option<Cmd>, json: bool, asked: bool, _owner_token: Option<&str>) -> Result<Option<Out>, RpcError> {
     if matches!(cmd, Some(Cmd::BuildInfo)) {
         let value = serde_json::to_value(crate::api::build_info()).expect("build identity serializes");
         return Ok(Some(Out { human: value.to_string(), json: value }));
@@ -366,6 +376,10 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcErro
     let Some(cmd) = cmd else {
         return bare(&paths, json);
     };
+    #[cfg(feature = "managed")]
+    if let Some(out) = managed::command(&paths, &cmd, _owner_token)? {
+        return Ok(Some(out));
+    }
     let call = |method: &str, params: Value| call(&paths, method, params);
     let target = |given: Option<String>| target(&paths, given, json, false);
     // Commands that can open the picker take an empty target to mean "pick".
@@ -374,8 +388,13 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcErro
     Ok(Some(match cmd {
         Cmd::BuildInfo => unreachable!("handled before path resolution"),
         Cmd::Serve => {
+            #[cfg(feature = "managed")]
+            {
+                crate::owner::authorize(&paths, _owner_token)?;
+                crate::owner::check_launch_env(&paths)?;
+            }
             crate::platform::prepare_core();
-            crate::server::serve().map_err(|e| RpcError::internal(e.to_string()))?;
+            crate::server::serve_owned(_owner_token).map_err(|e| RpcError::internal(e.to_string()))?;
             return Ok(None);
         }
         Cmd::Hold { socket } => {
@@ -882,6 +901,10 @@ pub const API_ONLY: &[&str] = &[
     "terminal.put_chunk",
     "terminal.put_finish",
     "terminal.put_abort",
+    #[cfg(feature = "managed")]
+    "server.authorize",
+    #[cfg(feature = "managed")]
+    "server.start",
 ];
 
 #[cfg(test)]
