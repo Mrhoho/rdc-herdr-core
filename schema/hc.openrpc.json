@@ -1059,6 +1059,49 @@
         ],
         "type": "object"
       },
+      "Stats": {
+        "properties": {
+          "denied": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "generated_paint_bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "limit": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "paint_workers": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "peak": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "used": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "limit",
+          "used",
+          "peak",
+          "denied",
+          "generated_paint_bytes",
+          "paint_workers"
+        ],
+        "type": "object"
+      },
       "Status": {
         "description": "One 7501 record. Words are the program's own; nothing is translated.",
         "properties": {
@@ -1167,9 +1210,13 @@
           },
           "version": {
             "type": "string"
+          },
+          "viewer_pending": {
+            "$ref": "#/components/schemas/Stats"
           }
         },
         "required": [
+          "viewer_pending",
           "core",
           "version",
           "build",
@@ -2500,6 +2547,16 @@
             "format": "uint",
             "minimum": 0,
             "type": "integer"
+          }
+        },
+        {
+          "description": "Ordered MARK frames (hello feature paint-marks), local terminals only.",
+          "name": "marks",
+          "required": false,
+          "schema": {
+            "default": false,
+            "description": "Ordered MARK frames (hello feature paint-marks), local terminals only.",
+            "type": "boolean"
           }
         },
         {

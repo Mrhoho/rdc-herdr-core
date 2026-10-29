@@ -595,3 +595,81 @@ fn managed_schema_publishes_owner_parameters() {
         assert!(text.contains("owner_token"), "{text}");
     }
 }
+
+#[test]
+fn managed_marked_paint_negotiates_and_survives_split_and_coalesced_frames() {
+    use herdr_core::wire;
+    use serde_json::json;
+    use std::io::{BufRead, Read, Write};
+    let s = Scratch::new();
+    s.config(&format!("socket = '{}'\nheadless='80x24'", s.socket().display()));
+    s.start();
+    let run = rpc(&s, "terminal.run", json!({"argv":["sh","-c","printf MARKED; sleep 60"],"bg":true})).unwrap();
+    let mut stream = std::os::unix::net::UnixStream::connect(s.socket()).unwrap();
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(10))).unwrap();
+    writeln!(stream, "{}", json!({"jsonrpc":"2.0","id":1,"method":"hello","params":{"framed":true}})).unwrap();
+    let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+    let mut hello = String::new();
+    reader.read_line(&mut hello).unwrap();
+    let hello: Value = serde_json::from_str(&hello).unwrap();
+    assert!(hello["result"]["features"].as_array().unwrap().iter().any(|f| f == "paint-marks"));
+    let req = json!({"jsonrpc":"2.0","id":2,"method":"terminal.attach","params":{"terminal":run["address"],"cols":80,"rows":24,"marks":true}});
+    for byte in wire::encode(0, wire::DATA, req.to_string().as_bytes()) {
+        stream.write_all(&[byte]).unwrap();
+    }
+    let mut began = None;
+    let mut data = Vec::new();
+    let mut ch = 0;
+    let mut ended = false;
+    while ch == 0 || !ended {
+        let mut header = [0; wire::HEADER];
+        reader.read_exact(&mut header).unwrap();
+        let (channel, kind, n) = wire::decode_header(&header).unwrap();
+        let mut payload = vec![0; n];
+        reader.read_exact(&mut payload).unwrap();
+        if channel == 0 {
+            let reply: Value = serde_json::from_slice(&payload).unwrap();
+            ch = reply["result"]["channel"].as_u64().unwrap() as u32;
+            continue;
+        }
+        if kind == wire::DATA {
+            assert!(began.is_some());
+            data.extend_from_slice(&payload);
+        }
+        if kind == wire::MARK {
+            let mark: Value = serde_json::from_slice(&payload).unwrap();
+            match mark["type"].as_str().unwrap() {
+                "paint_begin" => {
+                    assert!(began.is_none());
+                    began = Some(mark["paintGen"].clone());
+                }
+                "paint_end" => {
+                    assert_eq!(began, Some(mark["paintGen"].clone()));
+                    ended = true;
+                }
+                _ => panic!("unexpected mark {mark}"),
+            }
+        }
+    }
+    assert!(ch > 0);
+    assert!(!data.is_empty());
+    // Two complete frames in one socket write, with ordinary RPC after detach.
+    let req = json!({"jsonrpc":"2.0","id":3,"method":"server.status","params":{}});
+    stream
+        .write_all(
+            &[wire::encode(ch, wire::CLOSE, b""), wire::encode(0, wire::DATA, req.to_string().as_bytes())].concat(),
+        )
+        .unwrap();
+    loop {
+        let mut h = [0; wire::HEADER];
+        reader.read_exact(&mut h).unwrap();
+        let (ch, _, n) = wire::decode_header(&h).unwrap();
+        let mut bytes = vec![0; n];
+        reader.read_exact(&mut bytes).unwrap();
+        if ch == 0 {
+            let reply: Value = serde_json::from_slice(&bytes).unwrap();
+            assert!(reply["result"]["viewer_pending"]["limit"].as_u64().unwrap() > 0);
+            break;
+        }
+    }
+}

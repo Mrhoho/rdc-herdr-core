@@ -30,6 +30,8 @@ pub struct Display {
 }
 
 pub struct Viewer {
+    pub marks: bool,
+    suppressed: u64,
     pub conn: Arc<Conn>,
     pub channel: u32,
     pub observe: bool,
@@ -58,6 +60,7 @@ fn rgb(hex: &Option<String>) -> Option<Rgb> {
 }
 
 pub struct AttachRequest {
+    pub marks: bool,
     pub observe: bool,
     pub resize_notifications: bool,
     pub history: usize,
@@ -84,6 +87,8 @@ impl Core {
         let channel = conn.new_channel();
         let recovering = st.screens[&id].continuation().is_none();
         st.viewers.entry(id).or_default().push(Viewer {
+            marks: req.marks,
+            suppressed: 0,
             conn: conn.clone(),
             channel,
             observe: req.observe,
@@ -97,6 +102,14 @@ impl Core {
         });
         if !req.observe {
             self.apply_size(&mut st, id);
+        }
+        if req.marks {
+            st.viewers.get_mut(&id).unwrap().last_mut().unwrap().recovering = false;
+            conn.with(|out| {
+                out.open_viewer(channel, true, self.paint_budget.clone());
+            });
+            self.enqueue_paint(&st, id, conn, channel, req.history, crate::paint::Reason::Attach, false, 0);
+            return Ok(channel);
         }
         let paint = first_paint(&st, id, req.history);
         st.viewers.get_mut(&id).unwrap().last_mut().unwrap().repaint_pending = false;
@@ -192,8 +205,20 @@ impl Core {
             paint.extend_from_slice(&out[at..]);
             paint
         });
+        let mut marked_behind = Vec::new();
+        for v in st.viewers.get_mut(&id).into_iter().flatten().filter(|v| v.marks) {
+            if scrolling {
+                v.suppressed = v.suppressed.saturating_add(out.len() as u64);
+            } else if !v.conn.outbox().data(v.channel, &out) {
+                marked_behind.push((v.conn.clone(), v.channel));
+            } else {
+                v.conn.wake.notify_one();
+            }
+        }
         let mut behind = Vec::new();
-        for (index, v) in st.viewers.get_mut(&id).into_iter().flatten().enumerate().filter(|_| !scrolling) {
+        for (index, v) in
+            st.viewers.get_mut(&id).into_iter().flatten().enumerate().filter(|(_, v)| !scrolling && !v.marks)
+        {
             if v.repaint_pending {
                 continue;
             }
@@ -232,6 +257,9 @@ impl Core {
             st.reg.terminals.get_mut(&id).expect("live terminal").title = title.clone();
             self.save_soon();
             self.emit(st, "title", id, serde_json::json!({"title": title}));
+        }
+        for (conn, channel) in marked_behind {
+            self.enqueue_paint(st, id, &conn, channel, 0, crate::paint::Reason::Resync, false, 0);
         }
     }
 
@@ -411,12 +439,15 @@ impl Core {
             link.send(&proto::json_frame(proto::RESIZE, id, &proto::Size { cols, rows }));
         }
         let size = [cols.to_le_bytes(), rows.to_le_bytes()].concat();
-        for v in st.viewers.get_mut(&id).into_iter().flatten().filter(|v| v.resize_notifications) {
+        for v in st.viewers.get_mut(&id).into_iter().flatten().filter(|v| v.resize_notifications && !v.marks) {
             v.repaint_pending = true;
             v.conn.with(|out| out.resize(v.channel, &size));
         }
         self.save_soon();
         self.emit(st, "size", id, serde_json::json!({"cols": cols, "rows": rows}));
+        for v in st.viewers.get(&id).into_iter().flatten().filter(|v| v.marks) {
+            self.enqueue_paint(st, id, &v.conn, v.channel, 0, crate::paint::Reason::Resync, true, 0);
+        }
     }
 
     /// Serialize only the latest grid, when a viewer has credit to receive it.
@@ -431,7 +462,9 @@ impl Core {
     /// On exit there will be no later writer pass over this screen.
     pub(crate) fn queue_resize_paints(&self, st: &mut State, id: u32, conn: Option<&Arc<Conn>>) {
         let ready = |v: &Viewer| {
-            v.repaint_pending && conn.is_none_or(|conn| Arc::ptr_eq(&v.conn, conn) && conn.outbox().can_send(v.channel))
+            !v.marks
+                && v.repaint_pending
+                && conn.is_none_or(|conn| Arc::ptr_eq(&v.conn, conn) && conn.outbox().can_send(v.channel))
         };
         if !st.viewers.get(&id).into_iter().flatten().any(ready) {
             return;
@@ -512,4 +545,80 @@ fn paint_state(st: &State, id: u32, screen: Vec<u8>) -> Vec<u8> {
         paint.extend(status.encode(rid).as_bytes());
     }
     paint
+}
+
+impl Core {
+    /// All synthetic output enters the very same ordered viewer queue here.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn enqueue_paint(
+        &self,
+        st: &State,
+        id: u32,
+        conn: &Arc<Conn>,
+        channel: u32,
+        history: usize,
+        reason: crate::paint::Reason,
+        replace: bool,
+        loss: u64,
+    ) {
+        let marks = st
+            .viewers
+            .get(&id)
+            .into_iter()
+            .flatten()
+            .find(|v| Arc::ptr_eq(&v.conn, conn) && v.channel == channel)
+            .is_some_and(|v| v.marks);
+        // New viewers participate in size selection before their stream opens.
+        if !conn.outbox().has_stream(channel) {
+            return;
+        }
+        match crate::paint::Source::capture(st, id, history, marks, &self.paint_budget, &self.paint_metrics) {
+            Ok(source) => {
+                conn.with(|out| out.enqueue_paint(channel, source, Arc::downgrade(conn), reason, replace, loss))
+            }
+            Err(_) => conn.with(|out| out.close(channel, br#"{"reason":"paint_limit"}"#)),
+        }
+    }
+    /// Called without the Outbox lock. Lock order is always State -> Outbox.
+    pub(crate) fn prepare_paints(&self, conn: &Arc<Conn>) -> bool {
+        let st = self.lock();
+        let mut prepared = false;
+        for (id, viewers) in &st.viewers {
+            if st.stitching.contains(id) {
+                continue;
+            }
+            for v in viewers.iter().filter(|v| v.marks && Arc::ptr_eq(&v.conn, conn)) {
+                if conn.outbox().paint_ready(v.channel) {
+                    self.enqueue_paint(&st, *id, conn, v.channel, 0, crate::paint::Reason::Resync, false, 0);
+                    prepared = true;
+                }
+            }
+        }
+        prepared
+    }
+    pub(crate) fn stitch_paints(&self, st: &mut State, id: u32) {
+        let targets: Vec<_> = st
+            .viewers
+            .get_mut(&id)
+            .into_iter()
+            .flatten()
+            .filter(|v| v.marks)
+            .map(|v| (v.conn.clone(), v.channel, v.marks, std::mem::take(&mut v.suppressed)))
+            .collect();
+        for (conn, ch, marks, loss) in targets {
+            self.enqueue_paint(st, id, &conn, ch, 0, crate::paint::Reason::Stitch, marks, loss);
+        }
+    }
+    /// Freeze the final baseline before the canonical screen is removed. A
+    /// deferred retry must not depend on a live terminal after program exit.
+    pub(crate) fn complete_paints(&self, st: &State, id: u32) {
+        if !st.screens.contains_key(&id) {
+            return;
+        }
+        for v in st.viewers.get(&id).into_iter().flatten().filter(|v| v.marks) {
+            if v.suppressed > 0 || v.conn.outbox().needs_paint(v.channel) {
+                self.enqueue_paint(st, id, &v.conn, v.channel, 0, crate::paint::Reason::Resync, true, v.suppressed);
+            }
+        }
+    }
 }

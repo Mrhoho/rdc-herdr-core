@@ -25,6 +25,7 @@ pub const FEATURES: &[&str] = &[
     "restart_environment",
     "build-info",
     "connection-lifecycle",
+    "paint-marks",
 ];
 pub const FINISHED_LINES: usize = 1000;
 /// Terminal identity variables replaced by the core's defaults unless explicitly overridden.
@@ -244,6 +245,7 @@ async fn server_status(core: Ctx<'_>, _: Empty) -> Result<StatusResult, RpcError
         })
         .collect();
     Ok(StatusResult {
+        viewer_pending: crate::paint::Stats::new(&core.paint_budget, &core.paint_metrics),
         core: core.info.clone(),
         version: version(),
         build: build_info(),
@@ -483,6 +485,7 @@ async fn terminal_attach(core: Ctx<'_>, p: AttachParams) -> Result<AttachResult,
         ));
     }
     let req = crate::viewers::AttachRequest {
+        marks: p.marks,
         observe: p.observe,
         resize_notifications: p.resize_notifications,
         history: p.history,

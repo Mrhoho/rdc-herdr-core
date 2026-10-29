@@ -63,6 +63,7 @@ async fn queued_attach_and_subscribe_cannot_outlive_eof() {
     // A subsequent healthy viewer must not uncover the abandoned 43 x 11 size.
     let healthy = Arc::new(Conn::default());
     let req = crate::viewers::AttachRequest {
+        marks: false,
         observe: false,
         history: 0,
         size: (81, 25),

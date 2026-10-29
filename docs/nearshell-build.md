@@ -147,3 +147,22 @@ test starts that hc with a second scratch XDG/config/socket set. It never touche
 the installed hc or the default user session. Ordinary `cargo test --features
 managed-test --lib --test managed` skips only that fixture-dependent test and the
 existing upstream namespace helper. Do not distribute managed-test builds.
+
+
+## P1 ordered paint contract
+
+`hello.features` advertises `paint-marks`; API callers enable it with
+`terminal.attach {marks:true}`. The complete MARK payload, ordering, CREDIT,
+resync and resource contracts are in [the wire specification](../schema/README.md#ordered-paint-marks-fork-extension).
+This applies to both default and managed builds. CLI attach remains unmarked.
+Remote relay currently rejects marked attach explicitly; connect to the target
+core directly. No holder protocol or vendored Ghostty source changes are needed.
+
+The default shared pending limit is 64 MiB (`viewer_pending_bytes` in config,
+server restart to apply). A 4,600-row per-cell RGB history produced more than
+4 MiB of VT paint with a measured shared-budget peak around 23 MiB for two
+viewers and interrupted repaint. Twenty-four paused readers hit the 64 MiB cap;
+allocations stayed within it and all reservations were released on disconnect.
+Budget exhaustion may close affected streams (`paint_limit`); it does not kill
+the terminal or lift the cap. Product workload tuning belongs to the later
+CoreHost integration gates.
