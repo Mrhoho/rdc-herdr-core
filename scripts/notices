@@ -5,7 +5,7 @@ cd "$(dirname "$0")/.."
 out=crates/herdr-core/THIRD-PARTY-NOTICES
 work=$(mktemp -d "${TMPDIR:-/var/tmp}/hc-notices.XXXXXX")
 trap 'rm -rf "$work"' EXIT HUP INT TERM
-cargo metadata --format-version 1 --locked >"$work/metadata"
+cargo metadata --format-version 1 --locked --all-features >"$work/metadata"
 jq -r '.packages[] | select(.source != null) | "\(.name) \(.version)\t\(.license)\t\(.manifest_path)"' "$work/metadata" | sort >"$work/crates"
 {
     echo "hc (herdr-core) is Apache-2.0. It includes the software below."

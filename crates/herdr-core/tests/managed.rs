@@ -3,12 +3,15 @@ use serde_json::Value;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
-struct Scratch(PathBuf);
+struct Scratch(PathBuf, String, Option<std::fs::File>);
 impl Scratch {
     fn new() -> Self {
         let root = PathBuf::from(format!("/var/tmp/nc-{}", herdr_core::platform::random_hex()));
         std::fs::create_dir_all(root.join("config/herdr-core")).unwrap();
-        Self(root)
+        let lock =
+            std::fs::File::options().create(true).truncate(false).write(true).open(root.join("owner.lock")).unwrap();
+        assert!(herdr_core::platform::try_lock(&lock));
+        Self(root, herdr_core::platform::random_hex() + &herdr_core::platform::random_hex(), Some(lock))
     }
     fn cmd(&self) -> Command {
         let mut c = Command::new(env!("CARGO_BIN_EXE_nearshell-hc"));
@@ -22,7 +25,19 @@ impl Scratch {
         c
     }
     fn config(&self, text: &str) {
-        std::fs::write(self.0.join("config/herdr-core/config.toml"), text).unwrap();
+        std::fs::write(
+            self.0.join("config/herdr-core/config.toml"),
+            format!("owner_token_sha256 = '{}'\n{text}", herdr_core::owner::verifier(&self.1)),
+        )
+        .unwrap();
+    }
+    fn owner_cmd(&self) -> Command {
+        let mut cmd = self.cmd();
+        cmd.args(["--owner-token", &self.1]);
+        cmd
+    }
+    fn start(&self) -> Value {
+        value(self.owner_cmd().args(["server", "start"]).output().unwrap())
     }
     fn socket(&self) -> PathBuf {
         self.0.join("run/c.sock")
@@ -31,7 +46,7 @@ impl Scratch {
 impl Drop for Scratch {
     fn drop(&mut self) {
         if self.socket().exists() {
-            let _ = self.cmd().args(["server", "stop"]).output();
+            let _ = self.owner_cmd().args(["server", "stop"]).output();
         }
         let _ = std::fs::remove_dir_all(&self.0);
     }
@@ -62,7 +77,7 @@ fn managed_addressing_fails_closed_and_ignores_shell_xdg() {
     error(s.cmd().args(["connect", "--session", "other"]).output().unwrap(), "managed_address_override");
     assert!(!s.socket().exists());
     let local = value(s.cmd().args(["build-info", "--json"]).output().unwrap());
-    let status = value(s.cmd().args(["server", "status"]).output().unwrap());
+    let status = s.start();
     assert_eq!(status["build"], local);
     assert!(s.socket().exists());
     assert!(s.0.join("state/herdr-core/default/core.json").exists());
@@ -83,6 +98,7 @@ fn managed_cli_uses_its_own_name_and_keeps_payloads_opaque() {
     let out = s.cmd().arg("--version").output().unwrap();
     assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), "nearshell-hc 0.1.13");
     s.config(&format!("socket = '{}'", s.socket().display()));
+    s.start();
     let payload = "hc send t1 -- hc";
     let v = value(s.cmd().args(["--json", "exec", "printf", "%s", payload]).output().unwrap());
     assert_eq!(v["stdout"], "aGMgc2VuZCB0MSAtLSBoYw==");
@@ -124,7 +140,8 @@ fn scratch_build_has_no_production_fallback_and_cannot_install_upstream() {
     assert_ne!(build["commit"], "runtime-must-not-change-identity");
     assert!(build["config"].as_str().unwrap().ends_with(":scratch-test"));
     s.config(&format!("socket = '{}'", s.socket().display()));
-    error(s.cmd().args(["update"]).output().unwrap(), "managed_distribution");
+    error(s.cmd().args(["update"]).output().unwrap(), "managed_by_owner");
+    error(s.owner_cmd().args(["update"]).output().unwrap(), "managed_distribution");
     let paths = herdr_core::paths::Paths {
         socket: s.socket(),
         holder_socket: s.0.join("h.sock"),
@@ -146,10 +163,10 @@ fn rpc(s: &Scratch, method: &str, params: Value) -> Result<Value, herdr_core::rp
 fn read_eventually(path: &std::path::Path) -> String {
     let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
-        if let Ok(text) = std::fs::read_to_string(path) {
-            if text.contains("DONE=yes") {
-                return text;
-            }
+        if let Ok(text) = std::fs::read_to_string(path)
+            && text.contains("DONE=yes")
+        {
+            return text;
         }
         assert!(std::time::Instant::now() < end, "program did not write environment");
         std::thread::sleep(std::time::Duration::from_millis(20));
@@ -177,6 +194,7 @@ REMOVE_ME = 'never'
 HC_TERMINAL_ID = 'forged'
 HC_TERMINAL_SOCKET = 'forged'
 DONE = 'yes'
+CONFIG_MARKER = '{marker}'
 "#,
             s.socket().display(),
             user.0.display(),
@@ -187,12 +205,14 @@ DONE = 'yes'
         )
     };
     s.config(&config("first"));
-    value(s.cmd().args(["server", "status"]).output().unwrap());
+    s.start();
     let output = s.0.join("run.env");
     let v = rpc(&s, "terminal.run", json!({"argv":["/bin/sh","-c", format!("env > '{}'; exec sleep 60", output.display())],"keep":true,"env":{"TERM_PROGRAM":"caller"}})).unwrap();
     let id = v["address"].as_str().unwrap();
     let check = |text: &str, terminal: bool| {
-        assert!(text.contains(&format!("XDG_RUNTIME_DIR={}\n", user.0.display())), "{text}");
+        for key in ["XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR"] {
+            assert!(text.contains(&format!("{key}={}\n", user.0.display())), "{text}");
+        }
         for key in ["HC_SESSION=", "HC_SOCKET=", "HC_RUNTIME=", "REMOVE_ME=", "COLORTERM="] {
             assert!(!text.lines().any(|l| l.starts_with(key)), "{text}");
         }
@@ -214,7 +234,7 @@ DONE = 'yes'
     check(&text, false);
     let nested_file = s.0.join("nested.env");
     let nested = format!(
-        "'{}' --json run --bg /bin/sh -c 'env > {}; exec sleep 60' > '{}'",
+        "'{}' --json run --bg --keep --outlive-parent /bin/sh -c 'env > {}; exec sleep 60' > '{}'",
         env!("CARGO_BIN_EXE_nearshell-hc"),
         nested_file.display(),
         s.0.join("nested.json").display()
@@ -231,29 +251,347 @@ DONE = 'yes'
     };
     let nested = rpc(&s, "terminal.get", json!({"terminal":nested["address"]})).unwrap();
     assert_eq!(nested["parent"], parent["address"]);
+    value(s.cmd().args(["--json", "run", "/usr/bin/true"]).output().unwrap());
     // Restart env stores only the per-call override. Config changes are re-read for keep.
     let reg: Value =
         serde_json::from_slice(&std::fs::read(s.0.join("state/herdr-core/default/terminals.json")).unwrap()).unwrap();
     let record = reg["terminals"].as_object().unwrap().values().find(|t| t["address"] == id).unwrap();
     assert_eq!(record["restart_env"], json!({"TERM_PROGRAM":"caller"}));
+    let cli_file = s.0.join("cli.env");
+    let cli = value(
+        s.cmd()
+            .args(["run", "--bg", "--keep", "/bin/sh", "-c", &format!("env > '{}'; exec sleep 60", cli_file.display())])
+            .output()
+            .unwrap(),
+    );
+    check(&read_eventually(&cli_file), true);
+    let cli = rpc(&s, "terminal.get", json!({"terminal":cli["address"]})).unwrap();
     s.config(&config("second"));
-    let pid = v["pid"].as_u64().unwrap();
-    unsafe {
-        libc::kill(pid as i32, libc::SIGKILL);
-    }
-    let keep_file = s.0.join("keep.env");
-    let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    loop {
-        let t = rpc(&s, "terminal.get", json!({"terminal":id})).unwrap();
-        if t["pid"].as_u64().is_some_and(|p| p != pid) {
-            break;
+    for (index, terminal) in [&v, &nested, &cli].into_iter().enumerate() {
+        let id = terminal["address"].as_str().unwrap();
+        let pid = terminal["pid"].as_u64().unwrap();
+        unsafe {
+            libc::kill(pid as i32, libc::SIGKILL);
         }
-        assert!(std::time::Instant::now() < end, "keep did not restart: {t}");
-        std::thread::sleep(std::time::Duration::from_millis(30));
+        let keep_file = s.0.join(format!("keep-{index}.env"));
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let t = rpc(&s, "terminal.get", json!({"terminal":id})).unwrap();
+            if t["pid"].as_u64().is_some_and(|p| p != pid) {
+                break;
+            }
+            assert!(std::time::Instant::now() < end, "keep did not restart: {t}");
+            std::thread::sleep(std::time::Duration::from_millis(30));
+        }
+        rpc(&s, "terminal.send", json!({"terminal":id,"text":format!("env > '{}'",keep_file.display())})).unwrap();
+        let text = read_eventually(&keep_file);
+        check(&text, true);
+        assert!(text.contains("CONFIG_MARKER=second"));
+        assert!(text.contains(&format!("HC_TERMINAL_ID={id}\n")));
+        if index == 0 {
+            assert!(text.contains("TERM_PROGRAM=caller"));
+        }
     }
-    rpc(&s, "terminal.send", json!({"terminal":id,"text":format!("env > '{}'",keep_file.display()),"enter":true}))
+}
+
+#[test]
+fn owner_gates_cli_direct_rpc_and_orphaned_tokens_but_not_ordinary_calls() {
+    use serde_json::json;
+    let mut s = Scratch::new();
+    s.config(&format!("socket = '{}'", s.socket().display()));
+    let config_before = std::fs::read(s.0.join("config/herdr-core/config.toml")).unwrap();
+    for args in [
+        vec!["server", "status"],
+        vec!["ls"],
+        vec!["run", "--bg", "true"],
+        vec!["serve"],
+        vec!["server", "start"],
+        vec!["server", "stop"],
+        vec!["server", "restart"],
+        vec!["update", "--from", "/no/such/file"],
+        vec!["update", "--version", "0.1.13"],
+    ] {
+        error(s.cmd().args(args).output().unwrap(), "managed_by_owner");
+    }
+    assert!(!s.socket().exists());
+    assert_eq!(std::fs::read(s.0.join("config/herdr-core/config.toml")).unwrap(), config_before);
+    // Dirty calling environments are cleaned by the explicit owner launcher.
+    let first = value(
+        s.owner_cmd()
+            .env("HC_SECRET", "must-not-leak")
+            .env("HC_TERMINAL_ID", "t99")
+            .env("HC_SCOPE", "old")
+            .env("XDG_DATA_HOME", "private-data")
+            .args(["server", "start"])
+            .output()
+            .unwrap(),
+    );
+    let pid = first["pid"].clone();
+    for method in ["server.start", "server.stop", "server.restart", "server.authorize"] {
+        for token in [None, Some("bad"), Some("0000000000000000000000000000000000000000000000000000000000000000")] {
+            assert_eq!(rpc(&s, method, json!({"owner_token":token})).unwrap_err().kind, "managed_by_owner");
+        }
+    }
+    for args in [["server", "start"], ["server", "stop"], ["server", "restart"]] {
+        error(s.cmd().args(args).output().unwrap(), "managed_by_owner");
+    }
+    assert_eq!(value(s.cmd().args(["server", "status"]).output().unwrap())["pid"], pid);
+    // A second App cannot acquire the same owner inode.
+    let other = std::fs::File::options().write(true).open(s.0.join("owner.lock")).unwrap();
+    assert!(!herdr_core::platform::try_lock(&other));
+    let old = s.1.clone();
+    drop(s.2.take()); // owner crash: ordinary commands keep working
+    value(s.cmd().args(["ls"]).output().unwrap());
+    value(s.cmd().args(["run", "--bg", "/bin/sleep", "60"]).output().unwrap());
+    error(s.owner_cmd().args(["server", "restart"]).output().unwrap(), "managed_by_owner");
+    assert!(herdr_core::platform::try_lock(&other));
+    s.2 = Some(other);
+    s.1 = herdr_core::platform::random_hex() + &herdr_core::platform::random_hex();
+    s.config(&format!("socket = '{}'", s.socket().display()));
+    assert_eq!(rpc(&s, "server.restart", json!({"owner_token":old})).unwrap_err().kind, "managed_by_owner");
+    assert_eq!(s.start()["pid"], pid, "new owner adopts a live core without restarting");
+    let restarted = value(s.owner_cmd().env("HC_SECRET", "again").args(["server", "restart"]).output().unwrap());
+    assert_ne!(restarted["pid"], pid);
+    let result = rpc(&s, "machine.exec", json!({"argv":["/usr/bin/env"]})).unwrap();
+    let env = String::from_utf8(herdr_core::put::decode(result["stdout"].as_str().unwrap()).unwrap()).unwrap();
+    assert!(!env.contains("HC_SECRET="));
+    assert!(!env.contains("HC_TERMINAL_ID="));
+    assert!(!env.contains("XDG_DATA_HOME="));
+    // Explicit local management and owner rotation share a lock.
+    let operation = herdr_core::owner::operation(
+        &herdr_core::paths::Paths {
+            socket: s.socket(),
+            holder_socket: s.0.join("h.sock"),
+            state: s.0.join("state"),
+            config: s.0.join("config/herdr-core/config.toml"),
+        },
+        Some(&s.1),
+    )
+    .unwrap();
+    error(s.owner_cmd().args(["server", "restart"]).output().unwrap(), "managed_by_owner");
+    let rotation = std::fs::File::options().write(true).open(s.0.join("management.lock")).unwrap();
+    assert!(!herdr_core::platform::try_lock(&rotation), "an authorized CLI operation fences verifier rotation");
+    rpc(&s, "server.authorize", json!({"owner_token":s.1})).unwrap();
+    drop(operation);
+    assert!(herdr_core::platform::try_lock(&rotation));
+    assert_eq!(rpc(&s, "server.authorize", json!({"owner_token":s.1})).unwrap_err().kind, "managed_by_owner");
+    drop(rotation);
+}
+
+#[test]
+fn framed_management_also_requires_an_explicit_owner_capability() {
+    use herdr_core::wire;
+    use std::io::{Read, Write};
+    let s = Scratch::new();
+    s.config(&format!("socket = '{}'", s.socket().display()));
+    s.start();
+    let mut stream = herdr_core::platform::connect(&s.socket()).unwrap();
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+    herdr_core::client::call(&stream, "hello", serde_json::json!({"framed":true})).unwrap();
+    for method in ["server.stop", "server.restart", "server.start", "server.authorize"] {
+        let payload =
+            serde_json::to_vec(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":method,"params":{}})).unwrap();
+        stream.write_all(&wire::encode(0, wire::DATA, &payload)).unwrap();
+        let mut header = [0; wire::HEADER];
+        stream.read_exact(&mut header).unwrap();
+        let (_, _, len) = wire::decode_header(&header).unwrap();
+        let mut payload = vec![0; len];
+        stream.read_exact(&mut payload).unwrap();
+        let value: Value = serde_json::from_slice(&payload).unwrap();
+        assert_eq!(value["error"]["data"]["kind"], "managed_by_owner", "{value}");
+    }
+}
+
+#[test]
+fn managed_update_checks_owner_before_swap_and_preserves_ptys() {
+    use serde_json::json;
+    let s = Scratch::new();
+    let user = Scratch::new();
+    s.config(&format!("socket = '{}'\n[programs.env]\nXDG_CONFIG_HOME = '{}'\nXDG_STATE_HOME = '{}'\nXDG_DATA_HOME = '{}'\nXDG_CACHE_HOME = '{}'\nXDG_RUNTIME_DIR = '{}'", s.socket().display(),user.0.display(),user.0.display(),user.0.display(),user.0.display(),user.0.display()));
+    std::fs::create_dir_all(s.0.join("bin")).unwrap();
+    let dest = s.0.join("bin/nearshell-hc");
+    std::fs::copy(env!("CARGO_BIN_EXE_nearshell-hc"), &dest).unwrap();
+    let cmd = |owner: bool| {
+        let template = s.cmd();
+        let mut c = Command::new(&dest);
+        c.env_clear();
+        for (k, v) in template.get_envs() {
+            if let Some(v) = v {
+                c.env(k, v);
+            }
+        }
+        if owner {
+            c.args(["--owner-token", &s.1]);
+        }
+        c
+    };
+    let first = value(cmd(true).args(["server", "start"]).output().unwrap());
+    let running = rpc(&s, "terminal.run", json!({"argv":["/bin/sleep","60"]})).unwrap();
+    let before = std::fs::read(&dest).unwrap();
+    // Working executables with incompatible identity must also be refused.
+    let identity = value(s.cmd().args(["build-info", "--json"]).output().unwrap());
+    for field in ["config", "commit"] {
+        let mut wrong_identity = identity.clone();
+        wrong_identity[field] = json!("incompatible");
+        let fake = s.0.join(format!("wrong-{field}"));
+        std::fs::write(&fake, format!("#!/bin/sh\nprintf '%s\\n' '{}'\n", wrong_identity)).unwrap();
+        herdr_core::platform::make_executable(&fake).unwrap();
+        error(
+            cmd(true).args(["update", "--from", fake.to_str().unwrap(), "--force"]).output().unwrap(),
+            "managed_build",
+        );
+        assert_eq!(std::fs::read(&dest).unwrap(), before);
+    }
+
+    let wrong = s.0.join("wrong-build");
+    std::fs::write(&wrong, b"not a core").unwrap();
+    for args in [
+        vec!["update"],
+        vec!["update", "--version", "0.1.13"],
+        vec!["update", "--from", wrong.to_str().unwrap()],
+        vec!["update", "--from", env!("CARGO_BIN_EXE_nearshell-hc"), "--force"],
+    ] {
+        error(cmd(false).args(args).output().unwrap(), "managed_by_owner");
+        assert_eq!(std::fs::read(&dest).unwrap(), before);
+    }
+    error(cmd(true).args(["update", "--from", wrong.to_str().unwrap()]).output().unwrap(), "managed_build");
+    assert_eq!(std::fs::read(&dest).unwrap(), before);
+    let update = cmd(true)
+        .args(["update", "--from", env!("CARGO_BIN_EXE_nearshell-hc")])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .unwrap();
-    let text = read_eventually(&keep_file);
-    check(&text, true);
-    assert!(text.contains("TERM_PROGRAM=caller"));
+    error(cmd(false).args(["server", "restart"]).output().unwrap(), "managed_by_owner");
+    let updated = value(update.wait_with_output().unwrap());
+    assert_ne!(updated["pid"], first["pid"]);
+    let after = rpc(&s, "terminal.get", json!({"terminal":running["address"]})).unwrap();
+    assert_eq!(after["pid"], running["pid"]);
+    let after_env = s.0.join("after-update.env");
+    value(
+        cmd(false)
+            .args([
+                "run",
+                "--bg",
+                "/bin/sh",
+                "-c",
+                &format!("env > '{}'; echo DONE=yes >> '{}'", after_env.display(), after_env.display()),
+            ])
+            .output()
+            .unwrap(),
+    );
+    let env = read_eventually(&after_env);
+    for key in ["XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR"] {
+        assert!(env.contains(&format!("{key}={}\n", user.0.display())), "{env}");
+    }
+    assert!(!env.lines().any(|l| l.starts_with("HC_SOCKET=") || l.starts_with("HC_SESSION=")));
+    assert!(env.contains(&format!("HC_TERMINAL_SOCKET={}\n", s.socket().display())));
+    // The installed file may already have been replaced before an owner restart.
+    let replaced = s.0.join("replacement");
+    std::fs::copy(env!("CARGO_BIN_EXE_nearshell-hc"), &replaced).unwrap();
+    std::fs::rename(replaced, &dest).unwrap();
+    value(cmd(true).args(["server", "restart"]).output().unwrap());
+    assert_eq!(rpc(&s, "terminal.get", json!({"terminal":running["address"]})).unwrap()["pid"], running["pid"]);
+}
+
+#[test]
+#[ignore = "just managed-check supplies a frozen default-build binary"]
+fn user_hc_in_a_second_scratch_root_stays_independent_inside_managed_terminals() {
+    use serde_json::json;
+    let s = Scratch::new();
+    let user = Scratch::new();
+    let user_bin = std::env::var("NEARSHELL_HC_UPSTREAM_TEST_BIN").expect("run just managed-check");
+    struct UserCore(Command);
+    impl Drop for UserCore {
+        fn drop(&mut self) {
+            let _ = self.0.args(["server", "stop"]).output();
+        }
+    }
+    let user_cmd = || {
+        let mut cmd = Command::new(&user_bin);
+        cmd.env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", &user.0)
+            .env("XDG_CONFIG_HOME", user.0.join("config"))
+            .env("XDG_STATE_HOME", user.0.join("state"))
+            .env("XDG_DATA_HOME", user.0.join("data"))
+            .env("XDG_CACHE_HOME", user.0.join("cache"))
+            .env("XDG_RUNTIME_DIR", user.0.join("run"));
+        cmd
+    };
+    user.config(&format!("socket = '{}'", user.socket().display()));
+    std::fs::create_dir_all(user.0.join("bin")).unwrap();
+    std::os::unix::fs::symlink(&user_bin, user.0.join("bin/hc")).unwrap();
+    s.config(&format!(
+        r#"socket = '{}'
+[programs.env]
+XDG_CONFIG_HOME = '{}'
+XDG_STATE_HOME = '{}'
+XDG_DATA_HOME = '{}'
+XDG_CACHE_HOME = '{}'
+XDG_RUNTIME_DIR = '{}'
+PATH = '{}:/usr/bin:/bin'
+NEARSHELL_HC = '{}'
+"#,
+        s.socket().display(),
+        user.0.join("config").display(),
+        user.0.join("state").display(),
+        user.0.join("data").display(),
+        user.0.join("cache").display(),
+        user.0.join("run").display(),
+        user.0.join("bin").display(),
+        env!("CARGO_BIN_EXE_nearshell-hc")
+    ));
+    let status = s.start();
+    let _cleanup = UserCore(user_cmd());
+    let user_status = value(user_cmd().args(["server", "status"]).output().unwrap());
+    assert_ne!(status["core"]["id"], user_status["core"]["id"]);
+    let output = s.0.join("user-status");
+    let own_output = s.0.join("own-status");
+    rpc(&s,"terminal.run",json!({"argv":["/bin/sh","-c",format!("hc server status > '{}'; \"$NEARSHELL_HC\" server status > '{}'",output.display(),own_output.display())]})).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let (got_user, got_own): (Value, Value) = loop {
+        let a = serde_json::from_slice(&std::fs::read(&output).unwrap_or_default());
+        let b = serde_json::from_slice(&std::fs::read(&own_output).unwrap_or_default());
+        if let (Ok(a), Ok(b)) = (a, b) {
+            break (a, b);
+        }
+        assert!(std::time::Instant::now() < deadline, "nested hc did not answer");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    assert_eq!(got_user["pid"], user_status["pid"]);
+    assert_eq!(got_own["pid"], status["pid"]);
+    assert!(value(user_cmd().args(["ls"]).output().unwrap())["terminals"].as_array().unwrap().is_empty());
+    value(s.owner_cmd().args(["server", "stop"]).output().unwrap());
+    assert_eq!(value(user_cmd().args(["server", "status"]).output().unwrap())["pid"], user_status["pid"]);
+}
+
+#[test]
+fn a_managed_holder_preserves_ptys_without_autostarting_core() {
+    use serde_json::json;
+    let s = Scratch::new();
+    s.config(&format!("socket = '{}'", s.socket().display()));
+    let status = s.start();
+    let terminal = rpc(&s, "terminal.run", json!({"argv":["/bin/sleep","60"]})).unwrap();
+    unsafe {
+        libc::kill(status["pid"].as_i64().unwrap() as i32, libc::SIGKILL);
+    }
+    // Holder's normal crash-restart grace is 3 seconds. Cross it before
+    // observing the absence of an auto-start and the still-live program.
+    std::thread::sleep(std::time::Duration::from_secs(4));
+    error(s.cmd().args(["server", "status"]).output().unwrap(), "managed_by_owner");
+    assert_eq!(unsafe { libc::kill(terminal["pid"].as_i64().unwrap() as i32, 0) }, 0);
+    let next = s.start();
+    assert_ne!(next["pid"], status["pid"]);
+    assert_eq!(rpc(&s, "terminal.get", json!({"terminal":terminal["address"]})).unwrap()["pid"], terminal["pid"]);
+}
+
+#[test]
+fn managed_schema_publishes_owner_parameters() {
+    let schema = herdr_core::api::openrpc();
+    for method in ["server.stop", "server.restart", "server.start", "server.authorize"] {
+        let entry = schema["methods"].as_array().unwrap().iter().find(|m| m["name"] == method).unwrap();
+        let text = serde_json::to_string(entry).unwrap();
+        assert!(text.contains("owner_token"), "{text}");
+    }
 }
