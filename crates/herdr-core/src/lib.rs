@@ -43,3 +43,6 @@ pub mod wire;
 pub(crate) fn test_tmp() -> std::path::PathBuf {
     std::env::var_os("HC_TEST_TMPDIR").map_or_else(|| "/var/tmp".into(), Into::into)
 }
+
+#[cfg(feature = "managed")]
+pub mod program_env;

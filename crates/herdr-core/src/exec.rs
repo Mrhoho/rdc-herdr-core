@@ -6,6 +6,7 @@
 use crate::api::{ExecParams, ExecResult};
 use crate::rpc::RpcError;
 use crate::runtime::Core;
+#[cfg(not(feature = "managed"))]
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -75,6 +76,7 @@ fn program(p: &ExecParams) -> Result<Vec<String>, RpcError> {
 
 /// The core's environment without hc's own marks, plus `extra`, plus its
 /// token; `PWD` is its folder as the caller named it (as for terminals).
+#[cfg(not(feature = "managed"))]
 fn env(
     base: BTreeMap<String, String>,
     extra: BTreeMap<String, String>,
@@ -145,6 +147,18 @@ pub async fn run(core: &Arc<Core>, p: ExecParams, from_afar: bool) -> Result<Exe
     let slot = Slot::take()?;
     let cwd = folder(p.cwd.as_deref(), from_afar);
     let token = crate::sweep::token();
+    #[cfg(feature = "managed")]
+    let program_env = {
+        let settings = crate::config::load(&core.paths.config)?;
+        let mut env = crate::program_env::build(
+            crate::platform::program_env().await,
+            &settings.programs,
+            crate::api::labels(&p.env),
+        )?;
+        env.insert("PWD".into(), cwd.clone());
+        env.insert(crate::sweep::VAR.into(), token.clone());
+        env
+    };
     let dir = tokens_dir(&core.paths.state);
     let file = dir.join(&token);
     std::fs::create_dir_all(&dir)
@@ -159,9 +173,11 @@ pub async fn run(core: &Arc<Core>, p: ExecParams, from_afar: bool) -> Result<Exe
     }
     #[cfg(unix)]
     cmd.args(&argv[1..]);
+    #[cfg(not(feature = "managed"))]
+    let program_env = env(crate::platform::program_env().await, crate::api::labels(&p.env), &token, &cwd);
     cmd.current_dir(&cwd)
         .env_clear()
-        .envs(env(crate::platform::program_env().await, crate::api::labels(&p.env), &token, &cwd))
+        .envs(program_env)
         .stdin(if input.is_some() { std::process::Stdio::piped() } else { std::process::Stdio::null() })
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

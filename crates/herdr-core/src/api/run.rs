@@ -22,7 +22,7 @@ pub(super) async fn terminal_run(core: Ctx<'_>, mut p: RunParams) -> Result<RunR
     let quiet_ready = template.as_ref().is_some_and(|t| t.ready_when_quiet);
     let caller = p.caller.clone();
     let timeout = if p.wait { Some(wait_timeout(core, p.timeout)?) } else { None }; // checked before it starts
-    if p.wait {
+    if p.wait && !cfg!(feature = "managed") {
         // A pager in a real terminal waits for a person: a waited run would hang on it.
         for pager in ["PAGER", "GIT_PAGER", "GH_PAGER"] {
             p.env.insert(pager.into(), "cat".into());
@@ -95,6 +95,10 @@ pub(super) async fn start(
     template: Option<crate::templates::Template>,
 ) -> Result<Terminal, RpcError> {
     not_stopping(&core.lock())?;
+    #[cfg(feature = "managed")]
+    let settings = crate::config::load(&core.paths.config)?;
+    #[cfg(feature = "managed")]
+    let env = crate::program_env::build(crate::platform::program_env().await, &settings.programs, p.env.clone())?;
     core.ensure_holder().await.map_err(|e| {
         RpcError::new(
             "unavailable",
@@ -102,6 +106,7 @@ pub(super) async fn start(
             format!("run {CLI_NAME} server restart on this machine, then retry; see holder.log and core.log in the state directory"),
         )
     })?;
+    #[cfg(not(feature = "managed"))]
     let settings = crate::config::load(&core.paths.config)?;
     let (cols, rows) = match p.size {
         Some(size) if size.cols > 0 && size.rows > 0 => (size.cols, size.rows),
@@ -111,6 +116,7 @@ pub(super) async fn start(
     // A caller on another machine has no folder here: home, then.
     let from_afar = p.caller.as_deref().is_some_and(|c| c.contains('/'));
     let cwd = crate::exec::folder(p.cwd.as_deref(), from_afar);
+    #[cfg(not(feature = "managed"))]
     let env = child_env(crate::platform::program_env().await, p.env.clone());
     let identity = format!(
         "{} {}",
@@ -228,6 +234,7 @@ pub(crate) fn terminal_env(
 }
 
 /// The core's environment with its own terminal identity and explicit client overrides.
+#[cfg(not(feature = "managed"))]
 pub(crate) fn child_env(base: BTreeMap<String, String>, extra: BTreeMap<String, String>) -> BTreeMap<String, String> {
     let mut env: BTreeMap<String, String> = base
         .into_iter()
