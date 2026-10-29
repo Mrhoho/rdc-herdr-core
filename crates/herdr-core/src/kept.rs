@@ -48,6 +48,14 @@ impl Core {
         if self.sweeps.load(Ordering::SeqCst) != 0 || self.lock().stopping || self.restart.load(Ordering::SeqCst) {
             return;
         }
+        #[cfg(feature = "managed")]
+        let settings = match crate::config::load(&self.paths.config) {
+            Ok(settings) => settings,
+            Err(_) => {
+                eprintln!("core: managed_program_env");
+                return;
+            }
+        };
         if let Err(e) = self.ensure_holder().await {
             eprintln!("core: kept terminals waiting for a holder: {e}");
             return;
@@ -72,7 +80,20 @@ impl Core {
             let Some(holder) = st.current() else { break };
             let instance = holder.instance.clone();
             let t = st.reg.terminals.get_mut(&id).expect("pending");
+            #[cfg(not(feature = "managed"))]
             let env = crate::api::child_env(base_env.clone(), t.restart_env.clone());
+            #[cfg(feature = "managed")]
+            let env = match crate::program_env::build(base_env.clone(), &settings.programs, t.restart_env.clone()) {
+                Ok(env) => env,
+                Err(_) => {
+                    eprintln!("core: managed_program_env");
+                    continue;
+                }
+            };
+            #[cfg(feature = "managed")]
+            {
+                t.identity = crate::program_env::identity(&env);
+            }
             let cwd = t
                 .last_cwd
                 .as_ref()

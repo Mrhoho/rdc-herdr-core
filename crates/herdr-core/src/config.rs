@@ -6,6 +6,10 @@ use std::path::Path;
 
 #[derive(Deserialize, Default)]
 pub struct Config {
+    /// Managed program defaults, applied before per-call identity and unset.
+    #[cfg(feature = "managed")]
+    #[serde(default)]
+    pub programs: Programs,
     /// The chord that detaches `hc attach`: `ctrl+<key>`, default `ctrl+\`.
     pub detach_key: Option<String>,
     /// Seconds a `wait` runs before it checks in (default 180).
@@ -25,6 +29,15 @@ pub struct Config {
     /// timeout on top), and to send anything at all before its line is
     /// given up and dialed again (default 30).
     pub machine_timeout: Option<f64>,
+}
+
+#[cfg(feature = "managed")]
+#[derive(Deserialize, Default)]
+pub struct Programs {
+    #[serde(default)]
+    pub env: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub unset: Vec<String>,
 }
 
 impl Config {

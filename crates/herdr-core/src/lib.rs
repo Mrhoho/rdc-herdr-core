@@ -35,3 +35,6 @@ pub mod terminals;
 pub mod viewers;
 pub mod wait;
 pub mod wire;
+
+#[cfg(feature = "managed")]
+pub mod program_env;

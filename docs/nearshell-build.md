@@ -43,3 +43,37 @@ managed CLI 的版本前缀、help、skill、固定提示与内置模板说明�
 连接关闭在 Core 状态锁下撤销 admission 并回收 viewer/订阅；迟到的 attach/subscribe 返回 `connection_closed`，不能重新登记。已受理的其他 RPC 保留原有完成语义，死连接上的迟到回复被丢弃。headless 尺寸恢复及队列回收由确定性测试覆盖。
 
 默认验证：`cargo test --locked`、`just check`、`just docs-check`。额外验证 managed 代码：`cargo test --locked -p herdr-core --features managed-test --lib --test managed`。上游集成套件刻意使用 HC_SESSION，不适用于 managed feature；单独运行默认套件及上述 managed 套件。
+
+## Managed program environments (P3)
+
+Only the Cargo features `managed` / `managed-test` enable `[programs]`. Default builds
+retain upstream environment behavior. Configure program values in the private
+`config.toml`, for example:
+
+```toml
+[programs]
+unset = ["XDG_CACHE_HOME"]
+[programs.env]
+XDG_CONFIG_HOME = "/user/config"
+XDG_STATE_HOME = "/user/state"
+XDG_DATA_HOME = "/user/data"
+XDG_RUNTIME_DIR = "/user/runtime"
+PATH = "/private/bin:/usr/bin:/bin"
+NEARSHELL_HC = "/private/bin/nearshell-hc"
+```
+
+Run, nested run, replacement shells (keep), and exec use the same merge:
+core environment without HC internals, the five XDG homes and terminal identity;
+configured program values; per-call identity overrides; configured unset.
+Fallback locale and terminal defaults belong to the base, so unset wins over them.
+Omit each user XDG value that is unset; core-private XDG never becomes a fallback.
+Per-call `env` accepts only TERM, TERM_PROGRAM, TERM_PROGRAM_VERSION and COLORTERM
+(including exec); other keys return `managed_program_env`, without echoing values.
+Invalid environment entries also fail closed. Managed waited runs do not inject
+PAGER/GIT_PAGER/GH_PAGER; configure pager policy in `[programs]` if desired.
+
+After the merge, HC fields from all sources are removed. Run/keep add fresh
+terminal identity, socket, scope and PWD; exec adds only its scope and PWD.
+Keep re-reads configuration, re-computes terminal identity, and persists only the
+per-call override in `restart_env`. Invalid new configuration leaves recovery
+pending rather than spawning with private/default environment values.
