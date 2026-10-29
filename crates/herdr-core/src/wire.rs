@@ -121,9 +121,39 @@ pub struct Conn {
     /// It fell too far behind (`MAX_CONTROL`): the connection must end.
     pub overflowed: tokio::sync::Notify,
     next_channel: std::sync::atomic::AtomicU32,
+    // 0 = open, 1 = closing, 2 = closed. Admission and transitions hold
+    // Core::State; the atomic also lets writers discard late replies.
+    lifecycle: std::sync::atomic::AtomicU8,
 }
 
 impl Conn {
+    /// Caller holds Core::State until registration is complete.
+    pub(crate) fn admit(&self, _st: &crate::runtime::State) -> Result<(), crate::rpc::RpcError> {
+        if self.lifecycle.load(std::sync::atomic::Ordering::Acquire) != 0 {
+            return Err(crate::rpc::RpcError::new(
+                "connection_closed",
+                "connection is closed",
+                "open a new connection",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn begin_close(&self, _st: &crate::runtime::State) {
+        let mut out = self.outbox();
+        let _ = self.lifecycle.compare_exchange(
+            0,
+            1,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        );
+        *out = Outbox::default();
+    }
+
+    pub(crate) fn end_close(&self, _st: &crate::runtime::State) {
+        self.lifecycle.store(2, std::sync::atomic::Ordering::Release);
+    }
+
     pub fn outbox(&self) -> std::sync::MutexGuard<'_, Outbox> {
         self.outbox.lock().unwrap_or_else(|p| p.into_inner())
     }
@@ -135,6 +165,9 @@ impl Conn {
     /// Queue frames under the outbox lock, then wake the writer.
     pub fn with(&self, f: impl FnOnce(&mut Outbox)) {
         let mut out = self.outbox();
+        if self.lifecycle.load(std::sync::atomic::Ordering::Acquire) != 0 {
+            return;
+        }
         f(&mut out);
         if out.overflowed {
             self.overflowed.notify_one();

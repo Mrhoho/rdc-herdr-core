@@ -342,7 +342,11 @@ async fn write_frames(core: Arc<Core>, conn: Arc<Conn>, mut write: Writer) -> io
     }
 }
 
-async fn read_frames(core: &Arc<Core>, conn: &Arc<Conn>, read: &mut Reader) -> io::Result<()> {
+async fn read_frames(
+    core: &Arc<Core>,
+    conn: &Arc<Conn>,
+    read: &mut (impl tokio::io::AsyncRead + Unpin),
+) -> io::Result<()> {
     let u16_at = |p: &[u8], i: usize| u16::from_le_bytes([p[i], p[i + 1]]);
     // Execs running for this connection by request id: they end when it
     // closes, or when it gives up on one (`$/cancelRequest`).
@@ -544,3 +548,6 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
+
+#[cfg(all(test, unix))]
+mod lifecycle_tests;

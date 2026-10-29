@@ -69,6 +69,7 @@ impl Core {
     /// Adds a viewer: queues the first paint, then every live byte follows in order.
     pub fn attach(&self, conn: &Arc<Conn>, id: u32, req: AttachRequest) -> Result<u32, RpcError> {
         let mut st = self.lock();
+        conn.admit(&st)?;
         if let Some(t) = st.reg.terminals.get(&id) {
             t.check_program()?;
         }
@@ -363,6 +364,9 @@ impl Core {
     /// A viewer left (`channel` = None: the whole connection went away).
     pub fn detach(&self, conn: &Arc<Conn>, channel: Option<u32>) {
         let mut st = self.lock();
+        if channel.is_none() {
+            conn.begin_close(&st);
+        }
         self.unsubscribe(&mut st, conn, channel);
         let mut touched = Vec::new();
         for (id, vs) in st.viewers.iter_mut() {
@@ -379,6 +383,9 @@ impl Core {
         st.viewers.retain(|_, vs| !vs.is_empty());
         for id in touched {
             self.apply_size(&mut st, id);
+        }
+        if channel.is_none() {
+            conn.end_close(&st);
         }
     }
 

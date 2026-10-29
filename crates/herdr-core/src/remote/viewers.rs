@@ -38,7 +38,10 @@ pub(super) async fn reattach(core: Arc<Core>, m: Machine, line: Arc<Line>) {
         let lost_resize = matches!(&reply, Err(e) if e.message == RESIZE_LOST);
         let mut st = core.lock();
         // Gone meanwhile (the viewer detached): nothing to resume.
-        if !st.relayed.contains_key(&(key, here)) {
+        if r.conn.admit(&st).is_err() || !st.relayed.contains_key(&(key, here)) {
+            if let Some(there) = reply.ok().and_then(|reply| reply["channel"].as_u64()) {
+                line.close_stream(there as u32);
+            }
             continue;
         }
         let reply = reply.ok();
@@ -82,10 +85,15 @@ pub(super) fn negotiate_resize(line: &Line, params: &mut Value) {
 /// Opens a viewer here on a terminal there: the stream channel there is
 /// relayed to a new channel on this connection, both ways.
 pub async fn attach(core: &Core, conn: &Arc<Conn>, m: &Machine, mut params: Value) -> Result<Value, RpcError> {
+    conn.admit(&core.lock())?;
     let line = line(core, m).await?;
     negotiate_resize(&line, &mut params);
     let here = conn.new_channel();
-    conn.with(|out| out.open_paused(here));
+    {
+        let st = core.lock();
+        conn.admit(&st)?;
+        conn.with(|out| out.open_paused(here));
+    }
     let deadline = deadline_for(core, "terminal.attach", &params);
     match line
         .call_into(&m.name, "terminal.attach", params.clone(), Some(((conn.clone(), here), false)), deadline)
@@ -100,8 +108,15 @@ pub async fn attach(core: &Core, conn: &Arc<Conn>, m: &Machine, mut params: Valu
             params["resize_notifications"] = enabled.into();
             let automatic_input = automatic_input(&line, &r);
             r["automatic_input"] = automatic_input.into();
-            let viewer = Relayed { automatic_input, line, there, conn: conn.clone(), machine: m.id.clone(), params };
-            core.lock().relayed.insert((conn_key(conn), here), viewer);
+            {
+                let mut st = core.lock();
+                if let Err(error) = conn.admit(&st) {
+                    line.close_stream(there);
+                    return Err(error);
+                }
+                let viewer = Relayed { automatic_input, line, there, conn: conn.clone(), machine: m.id.clone(), params };
+                st.relayed.insert((conn_key(conn), here), viewer);
+            }
             r["channel"] = here.into();
             Ok(localize(core, &m.name, &[], r))
         }

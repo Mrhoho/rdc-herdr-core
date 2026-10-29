@@ -73,7 +73,16 @@ impl Line {
 
     /// A reply to one of our calls: to whoever waits for it.
     fn take_reply(&self, mut reply: Value) {
-        let Some((waiter, sink)) = reply["id"].as_u64().and_then(|id| lock(&self.pending).remove(&id)) else { return };
+        let channel = reply["result"]["channel"].as_u64().map(|c| c as u32);
+        let Some((waiter, sink)) = reply["id"].as_u64().and_then(|id| lock(&self.pending).remove(&id)) else {
+            if let Some(channel) = channel
+                && !lock(&self.streams).contains_key(&channel)
+                && lock(&self.mirror).1 != Some(channel)
+            {
+                self.close_stream(channel);
+            }
+            return;
+        };
         if let (Some((sink, require_resize)), Some(there)) = (sink, reply["result"]["channel"].as_u64()) {
             if require_resize && reply["result"]["resize_notifications"] != true {
                 let _ = self.frames.send(wire::encode(there as u32, wire::CLOSE, b""));
@@ -85,7 +94,16 @@ impl Line {
                 lock(&self.streams).insert(there as u32, sink);
             }
         }
-        let _ = waiter.send(reply);
+        if waiter.send(reply).is_err()
+            && let Some(channel) = channel
+        {
+            self.close_stream(channel);
+        }
+    }
+
+    fn close_stream(&self, channel: u32) {
+        lock(&self.streams).remove(&channel);
+        let _ = self.frames.send(wire::encode(channel, wire::CLOSE, b""));
     }
 
     fn message(&self, message: &Value) {
