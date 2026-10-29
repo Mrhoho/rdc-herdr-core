@@ -24,6 +24,8 @@ pub const FEATURES: &[&str] = &[
     "automatic_input",
     "restart_environment",
     "put_chunks",
+    "build-info",
+    "connection-lifecycle",
 ];
 pub const FINISHED_LINES: usize = 1000;
 /// Terminal identity variables replaced by the core's defaults unless explicitly overridden.
@@ -176,6 +178,16 @@ methods! { Ctx<'_>;
         errors [];
 }
 
+/// This binary's identity; no paths, daemon connection or runtime env lookup.
+pub fn build_info() -> BuildInfo {
+    BuildInfo {
+        commit: env!("NEARSHELL_CORE_COMMIT").into(),
+        patchset: env!("NEARSHELL_CORE_PATCHSET").into(),
+        release_seq: env!("NEARSHELL_CORE_RELEASE_SEQ").parse().expect("validated at build time"),
+        config: env!("NEARSHELL_CORE_CONFIG").into(),
+    }
+}
+
 fn version() -> String {
     env!("CARGO_PKG_VERSION").into()
 }
@@ -203,6 +215,7 @@ async fn hello(core: Ctx<'_>, p: HelloParams) -> Result<HelloResult, RpcError> {
     Ok(HelloResult {
         generation: GENERATION,
         version: version(),
+        build: build_info(),
         core: core.info.clone(),
         framed: p.framed,
         methods: METHOD_NAMES.iter().map(|m| m.to_string()).collect(),
@@ -235,6 +248,7 @@ async fn server_status(core: Ctx<'_>, _: Empty) -> Result<StatusResult, RpcError
     Ok(StatusResult {
         core: core.info.clone(),
         version: version(),
+        build: build_info(),
         pid: std::process::id(),
         uptime_ms: core.started.elapsed().as_millis() as u64,
         holder: holders.iter().find(|h| h.current).cloned(),

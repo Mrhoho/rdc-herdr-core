@@ -37,6 +37,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Print this binary's build identity without connecting to a core.
+    BuildInfo,
     /// Start a program, or a template by name with its task: hc run reviewer "review src/x.rs".
     Run(RunParams),
     /// List live terminals.
@@ -316,6 +318,10 @@ fn bare(paths: &Paths, json: bool) -> Result<Option<Out>, RpcError> {
 /// `json`: print JSON (asked, or piped). `asked`: `--json` itself, not a
 /// program's argument that happens to read `--json`.
 fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcError> {
+    if matches!(cmd, Some(Cmd::BuildInfo)) {
+        let value = serde_json::to_value(crate::api::build_info()).expect("build identity serializes");
+        return Ok(Some(Out { human: value.to_string(), json: value }));
+    }
     let paths = Paths::from_env()?;
     if !matches!(&cmd, Some(Cmd::Serve | Cmd::Hold { .. } | Cmd::Connect { .. })) {
         crate::platform::legacy_bundle_notice(&paths.state);
@@ -329,6 +335,7 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcErro
     let pick = |given: String| target((!given.is_empty()).then_some(given));
     let pick_finished = |given: String| crate::cli::target(&paths, (!given.is_empty()).then_some(given), json, true);
     Ok(Some(match cmd {
+        Cmd::BuildInfo => unreachable!("handled before path resolution"),
         Cmd::Serve => {
             crate::platform::prepare_core();
             crate::server::serve().map_err(|e| RpcError::internal(e.to_string()))?;

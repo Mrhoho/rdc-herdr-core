@@ -29,6 +29,32 @@
         ],
         "type": "object"
       },
+      "BuildInfo": {
+        "description": "Distribution identity, independent of the upstream semantic version.\nSequence zero and an unversioned commit identify a development build.",
+        "properties": {
+          "commit": {
+            "type": "string"
+          },
+          "config": {
+            "type": "string"
+          },
+          "patchset": {
+            "type": "string"
+          },
+          "releaseSeq": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "commit",
+          "patchset",
+          "releaseSeq",
+          "config"
+        ],
+        "type": "object"
+      },
       "Children": {
         "enum": [
           "any",
@@ -308,6 +334,9 @@
       },
       "HelloResult": {
         "properties": {
+          "build": {
+            "$ref": "#/components/schemas/BuildInfo"
+          },
           "core": {
             "$ref": "#/components/schemas/CoreInfo"
           },
@@ -363,6 +392,7 @@
         "required": [
           "generation",
           "version",
+          "build",
           "core",
           "framed",
           "methods",
@@ -1099,6 +1129,9 @@
       },
       "StatusResult": {
         "properties": {
+          "build": {
+            "$ref": "#/components/schemas/BuildInfo"
+          },
           "core": {
             "$ref": "#/components/schemas/CoreInfo"
           },
@@ -1168,6 +1201,7 @@
         "required": [
           "core",
           "version",
+          "build",
           "pid",
           "uptime_ms",
           "holders",

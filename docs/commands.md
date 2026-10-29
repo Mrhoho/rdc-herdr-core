@@ -68,6 +68,8 @@ Examples
   hc attach t3                             take it over
   hc run reviewer "review src/x.rs"        a template with a task
 
+Build identity (offline): hc build-info --json
+
 Agent? Run: hc --skill
 ```
 
@@ -86,6 +88,18 @@ Options:
       --observe            Watch only: never type or resize
       --history <HISTORY>  Scrollback lines to show first (main screen only) [default: 0]
   -h, --help               Print help
+```
+
+## hc build-info
+
+```text
+Print this binary's build identity without connecting to a core
+
+Usage: hc build-info [OPTIONS]
+
+Options:
+      --json  JSON output even in a terminal
+  -h, --help  Print help
 ```
 
 ## hc connect

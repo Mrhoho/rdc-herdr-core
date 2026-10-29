@@ -58,4 +58,6 @@ Examples
   hc attach t3                             take it over
   hc run reviewer "review src/x.rs"        a template with a task
 
+Build identity (offline): hc build-info --json
+
 Agent? Run: hc --skill

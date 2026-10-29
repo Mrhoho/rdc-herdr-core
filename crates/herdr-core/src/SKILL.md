@@ -348,3 +348,5 @@ paths start at your current folder. Prefer explicit paths for remote work.
   3 not_found, 7 needs_target, 9 blocked, 10 status_mismatch, 11 finished.
 - Codex must run with `--no-daemon` (including templates), or its commands
   execute outside hc.
+
+`hc build-info --json` prints this binary’s distribution identity locally, without connecting to or starting a core.
