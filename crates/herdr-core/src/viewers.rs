@@ -19,6 +19,12 @@ mod tests;
 /// What a viewer's own terminal looks like, reported by the client.
 #[derive(Serialize, Deserialize, JsonSchema, Clone, Default, Debug, PartialEq)]
 pub struct Display {
+    /// Sparse default ANSI palette, keys 0..255, values #rrggbb. Some({}) resets
+    /// to the built-in palette; omission keeps the previously known palette.
+    #[serde(default, deserialize_with = "palette")]
+    pub palette: Option<std::collections::BTreeMap<u8, String>>,
+    /// Explicit dark/light preference; absent derives from the default background.
+    pub dark: Option<bool>,
     /// Default foreground as `#rrggbb`.
     pub fg: Option<String>,
     /// Default background as `#rrggbb`.
@@ -57,6 +63,16 @@ fn rgb(hex: &Option<String>) -> Option<Rgb> {
     let hex = hex.as_deref()?.strip_prefix('#')?;
     let n = u32::from_str_radix(hex, 16).ok().filter(|_| hex.len() == 6)?;
     Some([(n >> 16) as u8, (n >> 8) as u8, n as u8])
+}
+
+fn palette<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<std::collections::BTreeMap<u8, String>>, D::Error> {
+    let value = Option::<std::collections::BTreeMap<u8, String>>::deserialize(deserializer)?;
+    if value.as_ref().is_some_and(|p| p.values().any(|v| rgb(&Some(v.clone())).is_none())) {
+        return Err(serde::de::Error::custom("invalid_palette"));
+    }
+    Ok(value)
 }
 
 pub struct AttachRequest {
@@ -357,8 +373,11 @@ impl Core {
     }
 
     pub fn viewer_facts(&self, conn: &Arc<Conn>, channel: u32, display: Display) {
+        if display.validate().is_err() { return; }
         let mut st = self.lock();
         let Some((id, v)) = Self::viewer(&mut st, conn, channel) else { return };
+        v.display.palette = display.palette.clone().or(v.display.palette.take());
+        v.display.dark = display.dark.or(v.display.dark);
         v.display.fg = display.fg.or(v.display.fg.take());
         v.display.bg = display.bg.or(v.display.bg.take());
         v.display.cursor = display.cursor.or(v.display.cursor.take());
@@ -484,15 +503,30 @@ impl Core {
         let answering = answering(st.viewers.get(&id));
         let State { screens, relays, .. } = st;
         let Some(screen) = screens.get_mut(&id) else { return };
+        let before_colors = screen.default_colors();
         if let Some(d) = display {
+            let entries = d.palette.as_ref().map(|p| p.iter().map(|(i,c)| (*i, rgb(&Some(c.clone())).expect("validated palette"))).collect::<Vec<_>>());
+            if screen.set_palette(entries.as_deref()).is_err() {
+                for v in st.viewers.get(&id).into_iter().flatten() {
+                    v.conn.with(|out| out.close(v.channel, br#"{"reason":"display_failed"}"#));
+                }
+                return;
+            }
             d.apply(screen);
+            screen.set_dark(d.dark);
         }
+        let colors_changed = screen.default_colors() != before_colors;
         // Display changes can notify an idle program, even without a resize or output.
         // In order behind a viewer's image answer; only output begins a wait.
         let (replies, _) = relays.entry(id).or_default().take_replies(screen, answering);
         let replies = ordered_replies(st.gates.entry(id).or_default(), &replies);
         if let Some(link) = st.link(id) {
             link.input(id, &replies);
+        }
+        if colors_changed {
+            for v in st.viewers.get(&id).into_iter().flatten().filter(|v| v.marks) {
+                self.enqueue_paint(st, id, &v.conn, v.channel, 0, crate::paint::Reason::Resync, true, 0);
+            }
         }
     }
 }

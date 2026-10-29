@@ -16,7 +16,7 @@ fn marks_cannot_overtake_data_or_be_left_behind_by_overflow() {
     out.viewer(1).unwrap().mark(Mark::Discontinuity { dropped: 1 }).unwrap();
     out.viewer(1)
         .unwrap()
-        .mark(Mark::PaintBegin { reason: Reason::Resync, generation: 2, cols: 80, rows: 24 })
+        .mark(Mark::PaintBegin { reason: Reason::Resync, generation: 2, cols: 80, rows: 24, colors: None })
         .unwrap();
     assert_eq!(out.next_frame().unwrap()[4], MARK, "marks need no byte credit");
     assert_eq!(out.next_frame().unwrap()[4], MARK);
@@ -47,7 +47,7 @@ fn shared_budget_covers_tiny_items_and_releases_on_detach() {
 #[tokio::test]
 async fn transport_splitting_and_coalescing_preserves_mark_data_order() {
     use tokio::io::AsyncWriteExt;
-    let begin = Mark::PaintBegin { reason: Reason::Attach, generation: 1, cols: 80, rows: 24 }.bytes();
+    let begin = Mark::PaintBegin { reason: Reason::Attach, generation: 1, cols: 80, rows: 24, colors: None }.bytes();
     let end = Mark::PaintEnd { generation: 1 }.bytes();
     let frames =
         [encode(3, MARK, &begin), encode(3, DATA, b"\x1b["), encode(3, DATA, b"31mRED"), encode(3, MARK, &end)];

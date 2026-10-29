@@ -166,3 +166,20 @@ allocations stayed within it and all reservations were released on disconnect.
 Budget exhaustion may close affected streams (`paint_limit`); it does not kill
 the terminal or lift the cap. Product workload tuning belongs to the later
 CoreHost integration gates.
+
+## P2 palette and dark preference
+
+`hello.features` includes `display-palette`. Display accepts a sparse 0–255
+palette and an explicit dark/light preference. The [wire contract](../schema/README.md#display-colors-display-palette-fork-feature)
+defines replacement/omission, validation, query ownership, and the required
+`paint_begin.colors` default layer. Both default and managed builds implement
+this opt-in color replay contract.
+
+The pinned Ghostty FFI already exposes default/effective colors and preserves
+OSC overrides when defaults change. No vendor source or submodule revision
+change is needed. Frozen replay clones recover override bits by temporarily
+changing defaults to different colors and restoring them before formatting;
+this handles overrides equal to defaults without depending on snapshot binary
+layout. Canonical terminals are never probed this way. Snapshot restoration
+retains saved color defaults; explicit dark is a viewer fact and must be sent
+again after reconnect, while program colors survive handover.

@@ -26,6 +26,7 @@ pub const FEATURES: &[&str] = &[
     "build-info",
     "connection-lifecycle",
     "paint-marks",
+    "display-palette",
 ];
 pub const FINISHED_LINES: usize = 1000;
 /// Terminal identity variables replaced by the core's defaults unless explicitly overridden.
