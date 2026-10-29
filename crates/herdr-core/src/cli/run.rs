@@ -25,7 +25,7 @@ pub(super) fn flags_after_task(paths: &Paths, p: RunParams) -> Result<(RunParams
         ..p
     };
     if merged.parent.is_some() && merged.no_parent {
-        return Err(RpcError::new("usage", "--parent and --no-parent together", "see `hc run --help`"));
+        return Err(RpcError::new("usage", "--parent and --no-parent together", format!("see `{CLI_NAME} run --help`")));
     }
     Ok((merged, json))
 }
@@ -57,11 +57,11 @@ fn trailing_flags(paths: &Paths, argv: &[String]) -> Result<Option<(RunParams, b
         return Ok(None);
     }
     let args =
-        ["hc".to_string(), "run".into()].into_iter().chain(flags).chain(["--".into(), argv[0].clone()]).chain(task);
+        [CLI_NAME.to_string(), "run".into()].into_iter().chain(flags).chain(["--".into(), argv[0].clone()]).chain(task);
     match Cli::try_parse_from(args) {
         Ok(Cli { cmd: Some(Cmd::Run(q)), json, .. }) => Ok(Some((q, json))),
         Ok(_) => Ok(None),
-        Err(e) => Err(RpcError::new("usage", usage_message(&e), "see `hc run --help`")),
+        Err(e) => Err(RpcError::new("usage", usage_message(&e), format!("see `{CLI_NAME} run --help`"))),
     }
 }
 
@@ -72,29 +72,29 @@ pub(super) fn ran(r: &Value) -> Result<Option<Out>, RpcError> {
     let t = r["address"].as_str().unwrap_or("?");
     // An older hc (on another machine) ignores the wait: it only started it.
     if r.get("wait").is_none() {
-        let fix = t.split_once('/').map(|(m, _)| format!(": hc machine update {m}")).unwrap_or_default();
-        println!("[hc] started as {t}, not waited on: that hc is older{fix}");
+        let fix = t.split_once('/').map(|(m, _)| format!(": {CLI_NAME} machine update {m}")).unwrap_or_default();
+        println!("[{CLI_NAME}] started as {t}, not waited on: that {CLI_NAME} is older{fix}");
         std::process::exit(0);
     }
     let w = &r["wait"];
     let status = w["status"].as_str().unwrap_or("no status");
     let (note, code) = match w["reason"].as_str() {
-        Some("timeout") => (Some(format!("still running as {t}: hc wait {t}, hc read {t}")), 124),
+        Some("timeout") => (Some(format!("still running as {t}: {CLI_NAME} wait {t}, {CLI_NAME} read {t}")), 124),
         Some("exit") => match (w["exit_code"].as_i64(), w["signal"].as_i64()) {
             (Some(0), _) => (None, 0),
             (Some(c), _) => (Some(format!("{t} exited (exit {c})")), c as i32),
             (_, Some(sig)) => (Some(format!("{t} ended by signal {sig}")), 128 + sig as i32),
             _ => (Some(format!("{t} ended")), 1),
         },
-        _ if status == "blocked" => (Some(format!("{t} is blocked: read it, then answer with hc send or hc keys")), 0),
-        _ => (Some(format!("{t} is {status}: hc send {t} <text>")), 0),
+        _ if status == "blocked" => (Some(format!("{t} is blocked: read it, then answer with {CLI_NAME} send or {CLI_NAME} keys")), 0),
+        _ => (Some(format!("{t} is {status}: {CLI_NAME} send {t} <text>")), 0),
     };
     let mut text = r["output"].as_str().unwrap_or_default().trim_end().to_string();
     if let Some(first) = r.get("first_message").filter(|f| f["sent"] != true) {
-        text.push_str(&format!("\n[hc] first message NOT sent: {}", first["reason"].as_str().unwrap_or("?")));
+        text.push_str(&format!("\n[{CLI_NAME}] first message NOT sent: {}", first["reason"].as_str().unwrap_or("?")));
     }
     if let Some(note) = note {
-        text.push_str(&format!("\n[hc] {note}"));
+        text.push_str(&format!("\n[{CLI_NAME}] {note}"));
     }
     let mut out = std::io::stdout();
     let _ = writeln!(out, "{}", text.trim_start_matches('\n')).and_then(|_| out.flush());

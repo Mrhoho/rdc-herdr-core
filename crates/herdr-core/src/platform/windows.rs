@@ -1,5 +1,6 @@
 //! Windows: named pipes, ConPTY, job objects, the console API.
 
+use crate::branding::COMMAND as CLI_NAME;
 use std::collections::BTreeMap;
 use std::ffi::c_void;
 use std::fs::File;
@@ -249,13 +250,15 @@ pub fn connect_error(error: &io::Error, existing_only: bool) -> Option<crate::rp
         Some(crate::rpc::RpcError::new(
             "unavailable",
             format!("the Windows core exists but this process cannot access its pipe: {error}"),
-            "if it was started elevated or over SSH, stop it with 'hc server stop' in an elevated terminal on that Windows machine, then open Herdr or run 'hc server start' in a normal desktop terminal",
+            format!(
+                "if it was started elevated or over SSH, stop it with '{CLI_NAME} server stop' in an elevated terminal on that Windows machine, then open Herdr or run '{CLI_NAME} server start' in a normal desktop terminal"
+            ),
         ))
     } else if existing_only {
         Some(crate::rpc::RpcError::new(
             "unavailable",
             format!("the Windows core is not reachable: {error}"),
-            "open Herdr on that Windows machine, or run 'hc server start' there",
+            format!("open Herdr on that Windows machine, or run '{CLI_NAME} server start' there"),
         ))
     } else {
         None
@@ -600,9 +603,9 @@ pub fn spawn_detached(cmd: Command, log: File) -> io::Result<()> {
         if !started && set != 0 && GetLastError() == ERROR_ACCESS_DENIED {
             if std::env::var_os("SSH_CONNECTION").is_some() && job_kills_on_close() {
                 DeleteProcThreadAttributeList(list);
-                return Err(io::Error::other(
-                    "this ssh session ends everything it started when you log out, and won't let hc leave: start hc once outside ssh (hc server start in a local terminal), then ssh in",
-                ));
+                return Err(io::Error::other(format!(
+                    "this ssh session ends everything it started when you log out, and won't let {CLI_NAME} leave: start {CLI_NAME} once outside ssh ({CLI_NAME} server start in a local terminal), then ssh in"
+                )));
             }
             started = start(flags);
         }
@@ -952,12 +955,12 @@ pub fn spawn_pty(
             &mut hpc,
         );
         if hr != 0 {
-            return Err(io::Error::other(format!("CreatePseudoConsole failed: {hr:#x}")));
+            return Err(io::Error::other(format!("CreatePseudoConsole failed: {hr:#x}&format!(")));
         }
         let console = Arc::new(PseudoConsole(std::sync::Mutex::new(Some(hpc as usize))));
 
         // Everything it starts goes with it: killed when the job's last handle
-        // closes (us, or the holder dying). Breakaway lets hc's own core and
+        // closes (us, or the holder dying). Breakaway lets {CLI_NAME}'s own core and
         // holders, started from inside, outlive it.
         let job = CreateJobObjectW(null(), null());
         if job.is_null() {
@@ -1050,7 +1053,7 @@ impl Pty {
     /// whole job (Windows has no hangup or terminate to ask with).
     pub fn signal(&self, _pid: u32, signal: i32) {
         if signal == super::signal::INT {
-            let _ = (&self.input).write_all(b"\x03");
+            let _ = (&self.input).write_all(b")\x03");
         } else {
             unsafe { TerminateJobObject(self.job.as_raw_handle() as HANDLE, 1) };
         }

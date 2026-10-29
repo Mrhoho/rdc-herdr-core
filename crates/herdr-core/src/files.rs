@@ -2,6 +2,7 @@
 //! machine that has them, whatever harness it runs in.
 
 use crate::api::{Edit, FileAt, FileEditParams, FileReadParams, FileReadResult, FileResult, FileWriteParams};
+use crate::branding::COMMAND as CLI_NAME;
 use crate::rpc::RpcError;
 use std::path::{Path, PathBuf};
 
@@ -38,9 +39,11 @@ fn resolve(at: &FileAt, from_afar: bool) -> PathBuf {
 
 fn io(path: &Path, e: std::io::Error) -> RpcError {
     match e.kind() {
-        std::io::ErrorKind::NotFound => {
-            RpcError::new("not_found", format!("no file {}", path.display()), "check the path, or hc exec ls")
-        }
+        std::io::ErrorKind::NotFound => RpcError::new(
+            "not_found",
+            format!("no file {}", path.display()),
+            format!("check the path, or {CLI_NAME} exec ls"),
+        ),
         _ => RpcError::new("io", format!("{}: {e}", path.display()), ""),
     }
 }
@@ -62,7 +65,11 @@ fn text_of(path: &Path) -> Result<String, RpcError> {
         return Err(RpcError::invalid_params(format!("{} is over {} MB", path.display(), MAX_FILE >> 20)));
     }
     String::from_utf8(bytes).map_err(|_| {
-        RpcError::new("not_text", format!("{} is not UTF-8 text", path.display()), "for bytes: hc exec cat")
+        RpcError::new(
+            "not_text",
+            format!("{} is not UTF-8 text", path.display()),
+            format!("for bytes: {CLI_NAME} exec cat"),
+        )
     })
 }
 

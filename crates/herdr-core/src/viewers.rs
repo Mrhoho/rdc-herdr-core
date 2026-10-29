@@ -1,6 +1,7 @@
 //! Viewers: raw attach streams on framed connections. First paint, live
 //! bytes (minus answered queries), input, and who sets the size.
 
+use crate::branding::COMMAND as CLI_NAME;
 use crate::holder_proto as proto;
 use crate::relay::image_answer_wait;
 use crate::rpc::RpcError;
@@ -77,7 +78,7 @@ impl Core {
             return Err(RpcError::new(
                 "finished",
                 format!("{} has finished", crate::terminals::address(id)),
-                format!("read what it left: hc read {}", crate::terminals::address(id)),
+                format!("read what it left: {CLI_NAME} read {}", crate::terminals::address(id)),
             ));
         }
         let channel = conn.new_channel();

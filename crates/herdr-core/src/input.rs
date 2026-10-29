@@ -1,6 +1,7 @@
 //! Input from agents: one queue per terminal, so send, keys and interrupt
 //! never interleave with each other, and never with a person typing.
 
+use crate::branding::COMMAND as CLI_NAME;
 use crate::holder_proto as proto;
 use crate::rpc::RpcError;
 use crate::runtime::{Core, State};
@@ -346,7 +347,7 @@ impl Core {
                         RpcError::new(
                             "finished",
                             format!("{} has finished", crate::terminals::address(id)),
-                            format!("hc read {}", crate::terminals::address(id)),
+                            format!("{CLI_NAME} read {}", crate::terminals::address(id)),
                         )
                     })?;
                     t.check_program()?;
@@ -437,7 +438,7 @@ impl Core {
                             t.status.as_ref().and_then(|s| s.kind.as_deref()).unwrap_or("waiting")
                         ),
                         format!(
-                            "typing would answer its dialog; read its screen first (hc read {}), or --force",
+                            "typing would answer its dialog; read its screen first ({CLI_NAME} read {}), or --force",
                             crate::terminals::address(id)
                         ),
                     ));
@@ -505,7 +506,7 @@ impl Core {
                 return Err(RpcError::new(
                     "unavailable",
                     format!("{} is still starting: its output has not settled", crate::terminals::address(id)),
-                    format!("nothing was typed; check hc read {}, then retry", crate::terminals::address(id)),
+                    format!("nothing was typed; check {CLI_NAME} read {}, then retry", crate::terminals::address(id)),
                 ));
             }
             tokio::time::sleep(Duration::from_millis(50)).await;

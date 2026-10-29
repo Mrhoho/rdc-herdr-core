@@ -1,6 +1,7 @@
 //! How results look to a person: rows, tables, one-line summaries.
 
 use super::*;
+use crate::branding::COMMAND as CLI_NAME;
 
 /// The program's own status word, else live or how it ended, and its dot.
 pub(super) fn status(t: &Value) -> (String, &'static str) {
@@ -181,9 +182,11 @@ pub(super) fn describe_wait(r: &Value) -> String {
         Some("exit") => format!("{t} exited (exit {}, turn {})", r["exit_code"], r["turn"]),
         Some("timeout") => format!("{t} still running: {word}, turn {} (wait again to keep waiting)", r["turn"]),
         Some("output") => format!("{t} printed it ({word}, turn {})", r["turn"]),
-        Some("not_started") => format!("{t} hasn't started on it ({word}): hc read {t}, then hc wait {t}"),
+        Some("not_started") => {
+            format!("{t} hasn't started on it ({word}): {CLI_NAME} read {t}, then {CLI_NAME} wait {t}")
+        }
         Some("running") => format!("{t} still running: {word}, turn {}", r["turn"]),
-        _ => format!("{t} {word}, turn {}. Read: hc read {t}", r["turn"]),
+        _ => format!("{t} {word}, turn {}. Read: {CLI_NAME} read {t}", r["turn"]),
     }
 }
 
@@ -246,12 +249,14 @@ pub(super) fn line_state(m: &Value) -> String {
         Some("needs_login") => {
             let keys = if cfg!(windows) { "set up its SSH keys, then " } else { "" };
             format!(
-                "needs login{}: {keys}hc machine login {}",
+                "needs login{}: {keys}{CLI_NAME} machine login {}",
                 since.unwrap_or_default(),
                 m["name"].as_str().unwrap_or("?")
             )
         }
-        Some("needs_update") => format!("needs an hc update: hc machine update {}", m["name"].as_str().unwrap_or("?")),
+        Some("needs_update") => {
+            format!("needs an {CLI_NAME} update: {CLI_NAME} machine update {}", m["name"].as_str().unwrap_or("?"))
+        }
         Some(state) => format!("{state}{}{why}", since.unwrap_or_default()),
         None => "?".into(),
     }
@@ -289,11 +294,11 @@ pub(super) fn exec_out(r: &Value) -> ! {
     let _ = out.write_all(&bytes("stdout")).and_then(|_| out.flush());
     let _ = err.write_all(&bytes("stderr"));
     if r["truncated"] == true {
-        let _ = writeln!(err, "[hc] output cut: kept the first 8 MB of stdout, 1 MB of stderr");
+        let _ = writeln!(err, "[{CLI_NAME}] output cut: kept the first 8 MB of stdout, 1 MB of stderr");
     }
     let code = match (r["timed_out"].as_bool(), r["code"].as_i64(), r["signal"].as_i64()) {
         (Some(true), _, _) => {
-            let _ = writeln!(err, "[hc] timed out after {} ms: ended", r["ms"]);
+            let _ = writeln!(err, "[{CLI_NAME}] timed out after {} ms: ended", r["ms"]);
             124
         }
         (_, Some(code), _) => code as i32,

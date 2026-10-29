@@ -1,5 +1,6 @@
 //! JSON-RPC 2.0 envelopes, errors with stable kinds, and the method table macro.
 
+use crate::branding::COMMAND as CLI_NAME;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value, json};
 
@@ -16,7 +17,7 @@ impl RpcError {
         RpcError { code: -32000, kind: kind.into(), message: message.into(), hint: hint.into() }
     }
     fn protocol(code: i64, kind: &str, message: impl Into<String>) -> Self {
-        RpcError { code, kind: kind.into(), message: message.into(), hint: "see `hc schema`".into() }
+        RpcError { code, kind: kind.into(), message: message.into(), hint: format!("see `{CLI_NAME} schema`") }
     }
     pub fn parse_error(message: impl Into<String>) -> Self {
         Self::protocol(-32700, "parse_error", message)
@@ -133,7 +134,7 @@ pub fn openrpc(methods: Vec<Value>, defs: Map<String, Value>, version: &str, gen
         "info": {
             "title": "herdr-core",
             "version": version,
-            "description": format!("Terminal runtime for coding agents. JSON-RPC 2.0, one message per line on the hc socket \
+            "description": format!("Terminal runtime for coding agents. JSON-RPC 2.0, one message per line on the {CLI_NAME} socket \
                 (or framed after `hello`). Protocol generation {generation}. Errors carry a stable `data.kind`."),
             "license": {"name": "Apache-2.0"},
         },

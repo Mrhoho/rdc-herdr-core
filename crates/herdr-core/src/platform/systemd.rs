@@ -3,6 +3,7 @@
 //! login ending can't take them along, and an ssh login's environment never
 //! becomes theirs.
 
+use crate::branding::COMMAND as CLI_NAME;
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::io::{self, Write};
@@ -81,7 +82,7 @@ pub fn spawn(cmd: &Command, log: &Path) -> Option<io::Result<()>> {
     let guarded = match ensure_shutdown_guard(&run, log) {
         Ok(()) => true,
         Err(e) => {
-            eprintln!("hc: {e}; starting without shutdown ordering");
+            eprintln!("{CLI_NAME}: {e}; starting without shutdown ordering");
             false
         }
     };
@@ -447,10 +448,10 @@ fn enable_linger(mut command: Command, user: String) -> io::Result<std::thread::
             .is_ok_and(|s| s.success());
         LINGER_CHANGED.notify_one();
         if enabled {
-            eprintln!("hc: turned on linger for {user}, so the core outlives your logins");
+            eprintln!("{CLI_NAME}: turned on linger for {user}, so the core outlives your logins");
         } else {
             eprintln!(
-                "hc: the core may stop when your last login ends; `sudo loginctl enable-linger -- {user}` keeps it"
+                "{CLI_NAME}: the core may stop when your last login ends; `sudo loginctl enable-linger -- {user}` keeps it"
             );
         }
     })

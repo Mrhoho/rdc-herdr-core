@@ -9,8 +9,18 @@ publish.workspace = true
 name = "herdr-core"
 path = "src/main.rs"
 
+[features]
+managed = []
+# Never distribute this build: path overrides are deliberately test-only.
+managed-test = ["managed"]
+
+[[bin]]
+name = "nearshell-hc"
+path = "src/nearshell_main.rs"
+required-features = ["managed"]
+
 [dependencies]
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "string"] }
 ghostty-vt = { path = "../ghostty-vt" }
 schemars = "1"
 serde = { version = "1", features = ["derive"] }

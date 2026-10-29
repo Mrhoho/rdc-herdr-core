@@ -1,12 +1,13 @@
 //! `hc update`: swap this hc for another build, keep the terminals running.
 
 use super::*;
+use crate::branding::COMMAND as CLI_NAME;
 
 /// What a binary says it is (`hc 0.2.0`), if it is a working hc.
 pub(super) fn version_of(path: &std::path::Path) -> Option<String> {
     let out = std::process::Command::new(path).arg("--version").stdin(std::process::Stdio::null()).output().ok()?;
     let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    (out.status.success() && v.starts_with("hc ")).then_some(v)
+    (out.status.success() && v.starts_with(crate::branding::VERSION_PREFIX)).then_some(v)
 }
 
 /// A release name for `--version`: `0.1.4` (it goes into a URL).
@@ -23,7 +24,7 @@ pub(super) fn release_version(s: &str) -> Result<String, String> {
 /// `hc 0.1.9` is older than `hc 0.2.0`; anything unparsed is not older.
 pub(super) fn older(a: &str, b: &str) -> bool {
     let parts = |v: &str| -> Option<Vec<u64>> {
-        v.strip_prefix("hc ")?.split(['.', '-']).take(3).map(|p| p.parse().ok()).collect()
+        v.strip_prefix(crate::branding::VERSION_PREFIX)?.split(['.', '-']).take(3).map(|p| p.parse().ok()).collect()
     };
     matches!((parts(a), parts(b)), (Some(a), Some(b)) if a < b)
 }
@@ -31,11 +32,11 @@ pub(super) fn older(a: &str, b: &str) -> bool {
 /// The installed binary can be current while a core started before it was
 /// replaced is still running. Do not start a core just to check its version.
 pub(super) fn up_to_date(paths: &Paths, release: &str, human: String) -> Result<Out, RpcError> {
-    let this = format!("hc {}", env!("CARGO_PKG_VERSION"));
+    let this = format!("{CLI_NAME} {}", env!("CARGO_PKG_VERSION"));
     let mut out = Out { json: json!({"release": release, "now": this, "updated": false}), human };
     if let Some(stream) = client::connect_existing(paths) {
         let status = client::call(&stream, "server.status", json!({}))?;
-        if older(&format!("hc {}", status["version"].as_str().unwrap_or_default()), &this) {
+        if older(&format!("{CLI_NAME} {}", status["version"].as_str().unwrap_or_default()), &this) {
             client::call(&stream, "server.restart", json!({}))?;
             wait_closed(&stream);
             let status = call(paths, "server.status", json!({}))?;
@@ -70,8 +71,8 @@ pub(super) fn update(paths: &Paths, from: &std::path::Path, force: bool) -> Resu
         };
         return Err(refused(format!("{shown} belongs to {manager}"), how));
     }
-    let was = format!("hc {}", env!("CARGO_PKG_VERSION"));
-    let now = version_of(from).ok_or_else(|| refused(format!("{} is not a working hc", from.display()), ""))?;
+    let was = format!("{CLI_NAME} {}", env!("CARGO_PKG_VERSION"));
+    let now = version_of(from).ok_or_else(|| refused(format!("{} is not a working {CLI_NAME}", from.display()), ""))?;
     if older(&now, &was) && !force {
         return Err(refused(format!("{now} is older than this {was}"), "--force to go back anyway"));
     }
@@ -101,4 +102,32 @@ pub(super) fn update(paths: &Paths, from: &std::path::Path, force: bool) -> Resu
         json: json!({"path": shown, "was": was, "now": now, "restarted": restarted, "pid": status["pid"]}),
         human,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn binary_version_and_comparison_use_the_same_distribution_prefix() {
+        let version = |v: &str| format!("{}{v}", crate::branding::VERSION_PREFIX);
+        assert!(older(&version("0.1.9"), &version("0.2.0")));
+        assert!(older(&version("0.2.0"), &version("0.10.0")));
+        assert!(!older(&version("0.2.0"), &version("0.2.0")));
+        assert!(!older(&version("0.10.0"), &version("0.9.9")));
+        assert!(!older("other-hc 0.1.0", &version("0.2.0")));
+        assert!(!older(&version("dev"), &version("0.2.0")));
+    }
+    #[cfg(unix)]
+    #[test]
+    fn version_probe_accepts_only_our_command_name() {
+        let root = std::env::temp_dir().join(format!("hc-version-{}", crate::platform::random_hex()));
+        std::fs::create_dir_all(&root).unwrap();
+        let executable = root.join("version");
+        for (prefix, accepted) in [(crate::branding::VERSION_PREFIX, true), ("other-hc ", false)] {
+            std::fs::write(&executable, format!("#!/bin/sh\nprintf '%s\\n' '{prefix}0.1.13'\n")).unwrap();
+            crate::platform::make_executable(&executable).unwrap();
+            assert_eq!(version_of(&executable).is_some(), accepted);
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

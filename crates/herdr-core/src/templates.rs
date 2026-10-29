@@ -1,6 +1,7 @@
 //! Templates: `~/.config/herdr-core/templates/<name>.md`, read fresh on every
 //! use. Frontmatter says how to start the agent; the body is its first message.
 
+use crate::branding::COMMAND as CLI_NAME;
 use crate::paths::Paths;
 use crate::rpc::RpcError;
 use crate::runtime::{Core, State};
@@ -80,9 +81,9 @@ pub fn load(paths: &Paths, name: &str) -> Result<Option<Template>, RpcError> {
     }
     let path = dir(paths).join(format!("{name}.md"));
     match std::fs::read_to_string(&path) {
-        Ok(text) => parse(name, &text)
-            .map(Some)
-            .map_err(|e| RpcError::new("invalid_template", format!("{}: {e}", path.display()), "see hc templates")),
+        Ok(text) => parse(name, &text).map(Some).map_err(|e| {
+            RpcError::new("invalid_template", format!("{}: {e}", path.display()), format!("see {CLI_NAME} templates"))
+        }),
         Err(_) => Ok(None),
     }
 }
@@ -146,7 +147,7 @@ impl Core {
                 }
                 if tokio::time::Instant::now() >= deadline {
                     return not_sent(format!(
-                        "its output never went quiet; check its screen (hc read {0}), then hc send {0}",
+                        "its output never went quiet; check its screen ({CLI_NAME} read {0}), then {CLI_NAME} send {0}",
                         crate::terminals::address(id)
                     ));
                 }
@@ -160,7 +161,7 @@ impl Core {
                     return not_sent("it exited before it was ready".into());
                 }
                 return not_sent(format!(
-                    "it never reported its status, so it may be showing a dialog; check its screen (hc read {0}), then hc send {0}",
+                    "it never reported its status, so it may be showing a dialog; check its screen ({CLI_NAME} read {0}), then {CLI_NAME} send {0}",
                     crate::terminals::address(id)
                 ));
             }
