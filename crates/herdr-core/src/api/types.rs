@@ -109,10 +109,22 @@ pub struct HelloParams {
     pub calls_you: Option<String>,
 }
 
+/// Distribution identity, independent of the upstream semantic version.
+/// Sequence zero and an unversioned commit identify a development build.
+#[derive(Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildInfo {
+    pub commit: String,
+    pub patchset: String,
+    pub release_seq: u64,
+    pub config: String,
+}
+
 #[derive(Serialize, JsonSchema)]
 pub struct HelloResult {
     pub generation: u32,
     pub version: String,
+    pub build: BuildInfo,
     pub core: CoreInfo,
     pub framed: bool,
     pub methods: Vec<String>,
@@ -133,6 +145,7 @@ pub struct HolderInfo {
 pub struct StatusResult {
     pub core: CoreInfo,
     pub version: String,
+    pub build: BuildInfo,
     pub pid: u32,
     pub uptime_ms: u64,
     /// The holder new terminals go to.

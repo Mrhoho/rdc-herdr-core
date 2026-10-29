@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub const GENERATION: u32 = 1;
-pub const FEATURES: &[&str] = &["framed", "attach", "events", "status", "shell"];
+pub const FEATURES: &[&str] = &["framed", "attach", "events", "status", "shell", "build-info", "connection-lifecycle"];
 pub const FINISHED_LINES: usize = 1000;
 /// A terminal's identity: fixed at start from whoever starts it.
 pub const IDENTITY_VARS: &[&str] = &["TERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION", "COLORTERM"];
@@ -150,6 +150,16 @@ methods! { Ctx<'_>;
         errors [];
 }
 
+/// This binary's identity; no paths, daemon connection or runtime env lookup.
+pub fn build_info() -> BuildInfo {
+    BuildInfo {
+        commit: env!("NEARSHELL_CORE_COMMIT").into(),
+        patchset: env!("NEARSHELL_CORE_PATCHSET").into(),
+        release_seq: env!("NEARSHELL_CORE_RELEASE_SEQ").parse().expect("validated at build time"),
+        config: env!("NEARSHELL_CORE_CONFIG").into(),
+    }
+}
+
 fn version() -> String {
     env!("CARGO_PKG_VERSION").into()
 }
@@ -176,6 +186,7 @@ async fn hello(core: Ctx<'_>, p: HelloParams) -> Result<HelloResult, RpcError> {
     Ok(HelloResult {
         generation: GENERATION,
         version: version(),
+        build: build_info(),
         core: core.info.clone(),
         framed: p.framed,
         methods: METHOD_NAMES.iter().map(|m| m.to_string()).collect(),
@@ -204,6 +215,7 @@ async fn server_status(core: Ctx<'_>, _: Empty) -> Result<StatusResult, RpcError
     Ok(StatusResult {
         core: core.info.clone(),
         version: version(),
+        build: build_info(),
         pid: std::process::id(),
         uptime_ms: core.started.elapsed().as_millis() as u64,
         holder: holders.iter().find(|h| h.current).cloned(),
