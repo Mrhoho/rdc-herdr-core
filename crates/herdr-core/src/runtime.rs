@@ -18,6 +18,8 @@ use std::time::{Duration, Instant, SystemTime};
 use tokio::sync::{Notify, oneshot};
 
 pub struct Core {
+    pub paint_budget: Arc<ghostty_vt::budget::Budget>,
+    pub paint_metrics: Arc<crate::paint::Metrics>,
     pub info: CoreInfo,
     pub started: Instant,
     pub stop: Notify,
@@ -163,7 +165,10 @@ impl Core {
         let machines = read_state(&paths.state.join("machines.json"))?;
         let peers = read_state(&paths.state.join("peers.json"))?;
         let (jobs, jobs_rx) = tokio::sync::mpsc::unbounded_channel();
+        let paint_limit = crate::config::load(&paths.config).unwrap_or_default().viewer_pending_bytes();
         let core = Arc::new(Core {
+            paint_budget: ghostty_vt::budget::Budget::new(paint_limit),
+            paint_metrics: Default::default(),
             info,
             started: Instant::now(),
             stop: Notify::new(),
@@ -597,6 +602,7 @@ impl Core {
             let _ = self.jobs.send(crate::notes::Job::Orphaned(id));
             crate::remote::orphaned_afar(self, st, id); // before `--rm` forgets where it reached
         }
+        self.complete_paints(st, id);
         for v in st.viewers.remove(&id).unwrap_or_default() {
             v.conn.with(|out| out.finish(v.channel, end.to_string().as_bytes()));
         }

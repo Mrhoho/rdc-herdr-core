@@ -19,6 +19,10 @@ pub const RESIZE: u8 = 3;
 pub const FOCUS: u8 = 4;
 /// Viewer → core: JSON display facts (colors, cell size).
 pub const FACTS: u8 = 5;
+/// Ordered paint metadata; opt-in viewer streams only, no DATA credit charged.
+pub const MARK: u8 = 6;
+mod viewer;
+use viewer::ViewerQueue;
 
 /// Credit a stream starts with before the viewer acknowledges anything.
 pub const WINDOW: usize = 256 * 1024;
@@ -176,6 +180,7 @@ impl Conn {
 }
 
 struct Stream {
+    viewer: Option<ViewerQueue>,
     pending: VecDeque<u8>,
     credit: usize,
     /// The program ended: CLOSE (with this reason) once `pending` is out.
@@ -209,7 +214,47 @@ impl Outbox {
     }
 
     pub fn open(&mut self, channel: u32) {
-        self.streams.insert(channel, Stream { pending: VecDeque::new(), credit: WINDOW, ending: None });
+        self.streams.insert(channel, Stream { viewer: None, pending: VecDeque::new(), credit: WINDOW, ending: None });
+    }
+
+    pub fn open_viewer(&mut self, channel: u32, marks: bool, budget: std::sync::Arc<ghostty_vt::budget::Budget>) {
+        self.open(channel);
+        if let Some(queue) = ViewerQueue::new(marks, budget) {
+            self.streams.get_mut(&channel).unwrap().viewer = Some(queue);
+        } else {
+            self.close(channel, br#"{"reason":"paint_limit"}"#);
+        }
+    }
+
+    fn viewer(&mut self, channel: u32) -> Option<&mut ViewerQueue> {
+        self.streams.get_mut(&channel)?.viewer.as_mut()
+    }
+
+    pub fn has_stream(&self, channel: u32) -> bool {
+        self.streams.contains_key(&channel)
+    }
+
+    pub fn needs_paint(&self, channel: u32) -> bool {
+        self.streams.get(&channel).and_then(|s| s.viewer.as_ref()).is_some_and(|q| q.needs_retry())
+    }
+
+    pub fn paint_ready(&self, channel: u32) -> bool {
+        self.streams.get(&channel).and_then(|s| s.viewer.as_ref()).is_some_and(|q| q.ready())
+    }
+
+    pub fn enqueue_paint(
+        &mut self,
+        channel: u32,
+        source: crate::paint::Source,
+        conn: std::sync::Weak<Conn>,
+        reason: crate::paint::Reason,
+        replace: bool,
+        loss: u64,
+    ) {
+        let Some(q) = self.viewer(channel) else { return };
+        if q.enqueue(source, conn, reason, replace, loss).is_err() {
+            self.close(channel, br#"{"reason":"paint_limit"}"#);
+        }
     }
 
     /// Ends a stream now (the viewer detached): whatever is queued is dropped.
@@ -231,6 +276,9 @@ impl Outbox {
     /// viewer is too far behind: the caller replaces it with a repaint.
     pub fn data(&mut self, channel: u32, bytes: &[u8]) -> bool {
         let Some(s) = self.streams.get_mut(&channel) else { return true };
+        if let Some(q) = &mut s.viewer {
+            return q.data(bytes);
+        }
         if s.pending.len() + bytes.len() > MAX_PENDING {
             s.pending.clear();
             return false;
@@ -254,7 +302,7 @@ impl Outbox {
     }
 
     pub fn queued(&self, channel: u32) -> usize {
-        self.streams.get(&channel).map_or(0, |s| s.pending.len())
+        self.streams.get(&channel).map_or(0, |s| s.viewer.as_ref().map_or(s.pending.len(), |q| q.queued()))
     }
 
     pub fn credit(&mut self, channel: u32, bytes: usize) {
@@ -268,19 +316,42 @@ impl Outbox {
             self.control_bytes -= frame.len();
             return Some(frame);
         }
-        if let Some((&channel, _)) = self.streams.iter().find(|(_, s)| s.ending.is_some() && s.pending.is_empty()) {
+        if let Some((&channel, _)) = self
+            .streams
+            .iter()
+            .find(|(_, s)| s.ending.is_some() && s.pending.is_empty() && s.viewer.as_ref().is_none_or(|q| q.empty()))
+        {
             let reason = self.streams.remove(&channel).and_then(|s| s.ending).unwrap_or_default();
             return Some(encode(channel, CLOSE, &reason));
         }
-        let ready: Vec<u32> =
-            self.streams.iter().filter(|(_, s)| s.credit > 0 && !s.pending.is_empty()).map(|(ch, _)| *ch).collect();
-        let channel = *ready.iter().find(|ch| **ch > self.turn).or(ready.first())?;
-        self.turn = channel;
-        let s = self.streams.get_mut(&channel).expect("ready stream");
-        let n = s.pending.len().min(s.credit).min(CHUNK);
-        s.credit -= n;
-        let chunk: Vec<u8> = s.pending.drain(..n).collect();
-        Some(encode(channel, DATA, &chunk))
+        let mut ready: Vec<u32> = self.streams.keys().copied().collect();
+        let split = ready.partition_point(|ch| *ch <= self.turn);
+        ready.rotate_left(split);
+        for channel in ready {
+            let s = self.streams.get_mut(&channel).expect("ready stream");
+            if let Some(q) = &mut s.viewer {
+                match q.next(channel, &mut s.credit) {
+                    Ok(Some(frame)) => {
+                        self.turn = channel;
+                        return Some(frame);
+                    }
+                    Ok(None) => continue,
+                    Err(()) => {
+                        self.streams.remove(&channel);
+                        return Some(encode(channel, CLOSE, br#"{"reason":"paint_limit"}"#));
+                    }
+                }
+            }
+            let n = s.pending.len().min(s.credit).min(CHUNK);
+            if n == 0 {
+                continue;
+            }
+            self.turn = channel;
+            s.credit -= n;
+            let chunk: Vec<u8> = s.pending.drain(..n).collect();
+            return Some(encode(channel, DATA, &chunk));
+        }
+        None
     }
 }
 
@@ -385,3 +456,6 @@ mod tests {
         assert!(!out.data(1, &vec![b'b'; MAX_PENDING]));
     }
 }
+
+#[cfg(test)]
+mod paint_tests;

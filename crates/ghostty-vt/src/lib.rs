@@ -180,7 +180,17 @@ mod ffi {
         pub value: bool,
     }
 
+    #[repr(C)]
+    pub struct Writer {
+        pub write: unsafe extern "C" fn(*mut c_void, *const u8, usize) -> bool,
+        pub userdata: *mut c_void,
+    }
     unsafe extern "C" {
+        pub fn ghostty_snapshot_encode(t: Terminal, writer: Writer) -> i32;
+        pub fn ghostty_snapshot_decoder_set(d: Decoder, opt: i32, value: *const c_void) -> i32;
+        pub fn ghostty_formatter_format(f: Formatter, writer: Writer) -> i32;
+        pub fn ghostty_terminal_continuation_write(t: Terminal, writer: Writer) -> i32;
+
         pub fn ghostty_terminal_new(alloc: *const c_void, out: *mut Terminal, cols: u16, rows: u16) -> i32;
         pub fn ghostty_terminal_free(t: Terminal);
         pub fn ghostty_terminal_set(t: Terminal, opt: i32, value: *const c_void) -> i32;
@@ -293,6 +303,8 @@ struct Hooks {
 pub struct Terminal {
     raw: ffi::Terminal,
     hooks: Box<Hooks>,
+    // Must outlive raw: Drop frees the terminal before this allocator context.
+    allocator: Option<Box<budget::Allocator>>,
 }
 
 // The handle is only touched through `&mut self` / `&self`; libghostty keeps no thread state.
@@ -386,7 +398,7 @@ impl Terminal {
             cell: DEFAULT_CELL,
             dark: true,
         });
-        let term = Terminal { raw, hooks };
+        let term = Terminal { raw, hooks, allocator: None };
         let ud: *const Hooks = &*term.hooks;
         let continuation = CONTINUATION_MAX_BYTES;
         unsafe {
@@ -909,3 +921,9 @@ mod tests {
         assert_eq!(ask(&mut t, b"\x1b[?u"), "\x1b[?0u");
     }
 }
+
+pub mod budget;
+#[cfg(test)]
+mod paint_tests;
+
+mod paint;

@@ -746,6 +746,13 @@ pub fn conn_key(conn: &Arc<Conn>) -> usize {
 /// Opens a viewer here on a terminal there: the stream channel there is
 /// relayed to a new channel on this connection, both ways.
 pub async fn attach(core: &Core, conn: &Arc<Conn>, m: &Machine, params: Value) -> Result<Value, RpcError> {
+    if params.get("marks").and_then(Value::as_bool) == Some(true) {
+        return Err(RpcError::new(
+            "marks_local_only",
+            "paint marks require a direct core connection",
+            "connect directly to the terminal core",
+        ));
+    }
     conn.admit(&core.lock())?;
     let line = line(core, m).await?;
     let here = conn.new_channel();

@@ -14,7 +14,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub const GENERATION: u32 = 1;
-pub const FEATURES: &[&str] = &["framed", "attach", "events", "status", "shell", "build-info", "connection-lifecycle"];
+pub const FEATURES: &[&str] =
+    &["framed", "attach", "events", "status", "shell", "build-info", "connection-lifecycle", "paint-marks"];
 pub const FINISHED_LINES: usize = 1000;
 /// A terminal's identity: fixed at start from whoever starts it.
 pub const IDENTITY_VARS: &[&str] = &["TERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION", "COLORTERM"];
@@ -228,6 +229,7 @@ async fn server_status(core: Ctx<'_>, _: Empty) -> Result<StatusResult, RpcError
         })
         .collect();
     Ok(StatusResult {
+        viewer_pending: crate::paint::Stats::new(&core.paint_budget, &core.paint_metrics),
         core: core.info.clone(),
         version: version(),
         build: build_info(),
@@ -427,6 +429,7 @@ async fn terminal_attach(core: Ctx<'_>, p: AttachParams) -> Result<AttachResult,
         ));
     }
     let req = crate::viewers::AttachRequest {
+        marks: p.marks,
         observe: p.observe,
         history: p.history,
         size: (p.cols, p.rows),

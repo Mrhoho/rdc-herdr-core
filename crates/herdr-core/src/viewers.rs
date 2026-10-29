@@ -27,6 +27,8 @@ pub struct Display {
 }
 
 pub struct Viewer {
+    pub marks: bool,
+    suppressed: u64,
     pub conn: Arc<Conn>,
     pub channel: u32,
     pub observe: bool,
@@ -43,6 +45,7 @@ fn rgb(hex: &Option<String>) -> Option<Rgb> {
 }
 
 pub struct AttachRequest {
+    pub marks: bool,
     pub observe: bool,
     pub history: usize,
     pub size: (u16, u16),
@@ -67,6 +70,8 @@ impl Core {
         }
         let channel = conn.new_channel();
         st.viewers.entry(id).or_default().push(Viewer {
+            marks: req.marks,
+            suppressed: 0,
             conn: conn.clone(),
             channel,
             observe: req.observe,
@@ -75,11 +80,8 @@ impl Core {
             display: req.display,
         });
         self.apply_size(&mut st, id);
-        let paint = first_paint(&st, id, req.history);
-        conn.with(|out| {
-            out.open(channel);
-            out.data(channel, &paint);
-        });
+        conn.with(|out| out.open_viewer(channel, req.marks, self.paint_budget.clone()));
+        self.enqueue_paint(&st, id, conn, channel, req.history, crate::paint::Reason::Attach, false, 0);
         Ok(channel)
     }
 
@@ -110,7 +112,11 @@ impl Core {
         let title = screen.take_title_changed().then(|| screen.title());
         let full_screen = screen.alt_screen();
         let mut behind = Vec::new();
-        for v in viewers.get(&id).into_iter().flatten().filter(|_| !scrolling) {
+        for v in viewers.get_mut(&id).into_iter().flatten() {
+            if scrolling {
+                v.suppressed = v.suppressed.saturating_add(out.len() as u64);
+                continue;
+            }
             v.conn.with(|ob| {
                 if !ob.data(v.channel, &out) {
                     behind.push((v.conn.clone(), v.channel));
@@ -124,12 +130,6 @@ impl Core {
             t.win32_input = on;
             self.save(st);
         }
-        for (conn, channel) in behind {
-            let paint = first_paint(st, id, 0); // too far behind: start over from now
-            conn.with(|ob| {
-                ob.data(channel, &paint);
-            });
-        }
         if full_screen && let Some(t) = st.reg.terminals.get_mut(&id) {
             t.full_screen = true;
         }
@@ -140,6 +140,9 @@ impl Core {
             st.reg.terminals.get_mut(&id).expect("live terminal").title = title.clone();
             self.save_soon();
             self.emit(st, "title", id, serde_json::json!({"title": title}));
+        }
+        for (conn, channel) in behind {
+            self.enqueue_paint(st, id, &conn, channel, 0, crate::paint::Reason::Resync, false, 0);
         }
     }
 
@@ -279,20 +282,83 @@ impl Core {
         }
         self.save_soon();
         self.emit(st, "size", id, serde_json::json!({"cols": cols, "rows": rows}));
+        for v in st.viewers.get(&id).into_iter().flatten().filter(|v| v.marks) {
+            self.enqueue_paint(st, id, &v.conn, v.channel, 0, crate::paint::Reason::Resync, true, 0);
+        }
     }
 }
 
-/// The screen, then the latest 7501 report of every record and whether the
-/// program wants win32 key events (both pass through to viewers, so a new one
-/// must see them too; a viewer repainted after falling behind gets the mode
-/// either way).
-pub(crate) fn first_paint(st: &State, id: u32, history: usize) -> Vec<u8> {
-    let mut paint = st.screens[&id].paint(history);
-    let t = &st.reg.terminals[&id];
-    paint.extend(if t.win32_input { b"\x1b[?9001h" } else { b"\x1b[?9001l" });
-    let root = t.status.iter().map(|s| ("", s));
-    for (rid, status) in root.chain(t.records.iter().map(|(k, s)| (k.as_str(), s))) {
-        paint.extend(status.encode(rid).as_bytes());
+impl Core {
+    /// All synthetic output enters the very same ordered viewer queue here.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn enqueue_paint(
+        &self,
+        st: &State,
+        id: u32,
+        conn: &Arc<Conn>,
+        channel: u32,
+        history: usize,
+        reason: crate::paint::Reason,
+        replace: bool,
+        loss: u64,
+    ) {
+        let marks = st
+            .viewers
+            .get(&id)
+            .into_iter()
+            .flatten()
+            .find(|v| Arc::ptr_eq(&v.conn, conn) && v.channel == channel)
+            .is_some_and(|v| v.marks);
+        // New viewers participate in size selection before their stream opens.
+        if !conn.outbox().has_stream(channel) {
+            return;
+        }
+        match crate::paint::Source::capture(st, id, history, marks, &self.paint_budget, &self.paint_metrics) {
+            Ok(source) => {
+                conn.with(|out| out.enqueue_paint(channel, source, Arc::downgrade(conn), reason, replace, loss))
+            }
+            Err(_) => conn.with(|out| out.close(channel, br#"{"reason":"paint_limit"}"#)),
+        }
     }
-    paint
+    /// Called without the Outbox lock. Lock order is always State -> Outbox.
+    pub(crate) fn prepare_paints(&self, conn: &Arc<Conn>) -> bool {
+        let st = self.lock();
+        let mut prepared = false;
+        for (id, viewers) in &st.viewers {
+            if st.stitching.contains(id) {
+                continue;
+            }
+            for v in viewers.iter().filter(|v| Arc::ptr_eq(&v.conn, conn)) {
+                if conn.outbox().paint_ready(v.channel) {
+                    self.enqueue_paint(&st, *id, conn, v.channel, 0, crate::paint::Reason::Resync, false, 0);
+                    prepared = true;
+                }
+            }
+        }
+        prepared
+    }
+    pub(crate) fn stitch_paints(&self, st: &mut State, id: u32) {
+        let targets: Vec<_> = st
+            .viewers
+            .get_mut(&id)
+            .into_iter()
+            .flatten()
+            .map(|v| (v.conn.clone(), v.channel, v.marks, std::mem::take(&mut v.suppressed)))
+            .collect();
+        for (conn, ch, marks, loss) in targets {
+            self.enqueue_paint(st, id, &conn, ch, 0, crate::paint::Reason::Stitch, marks, loss);
+        }
+    }
+    /// Freeze the final baseline before the canonical screen is removed. A
+    /// deferred retry must not depend on a live terminal after program exit.
+    pub(crate) fn complete_paints(&self, st: &State, id: u32) {
+        if !st.screens.contains_key(&id) {
+            return;
+        }
+        for v in st.viewers.get(&id).into_iter().flatten() {
+            if v.suppressed > 0 || v.conn.outbox().needs_paint(v.channel) {
+                self.enqueue_paint(st, id, &v.conn, v.channel, 0, crate::paint::Reason::Resync, true, v.suppressed);
+            }
+        }
+    }
 }

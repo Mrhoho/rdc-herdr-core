@@ -6,6 +6,8 @@ use std::path::Path;
 
 #[derive(Deserialize, Default)]
 pub struct Config {
+    /// Shared viewer queue / frozen paint budget in bytes; read at server start.
+    pub viewer_pending_bytes: Option<usize>,
     /// SHA-256 verifier only; never a plaintext owner token. Managed builds only.
     #[cfg(feature = "managed")]
     pub owner_token_sha256: Option<String>,
@@ -44,6 +46,10 @@ pub struct Programs {
 }
 
 impl Config {
+    pub fn viewer_pending_bytes(&self) -> usize {
+        self.viewer_pending_bytes.unwrap_or(64 << 20)
+    }
+
     pub fn headless(&self) -> Result<(u16, u16), RpcError> {
         let Some(spec) = &self.headless else { return Ok((200, 120)) };
         spec.split_once('x')
