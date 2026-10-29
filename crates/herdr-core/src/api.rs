@@ -93,7 +93,7 @@ methods! { Ctx<'_>;
         errors ["not_found", "machine_unknown"];
     "terminal.attach" => terminal_attach, AttachParams => AttachResult,
         "Open a raw stream to a live terminal on this framed connection (see `hello` with `framed`). Loss ends the stream even when kept; reattach after the restarted event.",
-        errors ["not_found", "machine_unknown", "finished", "unavailable", "needs_framed"];
+        errors ["not_found", "machine_unknown", "finished", "unavailable", "needs_framed", "connection_closed"];
     "terminal.send" => terminal_send, SendParams => SendResult,
         "Paste text and press Enter, once nobody has typed for ~3 s; keys a person presses meanwhile are held, then delivered. Refuses a blocked program unless `force`.",
         errors ["not_found", "machine_unknown", "finished", "unavailable", "blocked", "status_mismatch", "invalid_params", "config"];
@@ -129,7 +129,7 @@ methods! { Ctx<'_>;
         errors ["invalid_params", "conflict", "internal", "machine_unknown", "unavailable", "needs_update"];
     "events.subscribe" => events_subscribe, SubscribeParams => SubscribeResult,
         "Snapshot of matching terminals, then every fact change in order (created, lost, restarted, keep, finished, removed, status, turn, title, labels, size, doc) as `event` notifications, `heartbeat` every 15 s, and `missed` + fresh snapshot for a subscriber that fell behind.",
-        errors ["not_found", "machine_unknown"];
+        errors ["not_found", "machine_unknown", "connection_closed"];
     "machine.add" => machine_add, MachineAddParams => crate::machines::Machine,
         "Add another machine: dial it over ssh, check that hc answers there, and keep it under a name.",
         errors ["invalid_params", "name_taken", "already_added", "unreachable", "hc_missing", "incompatible"];
@@ -383,6 +383,7 @@ async fn terminal_attach(core: Ctx<'_>, p: AttachParams) -> Result<AttachResult,
             "send hello with framed: true first, or use `hc attach`",
         ));
     };
+    conn.admit(&core.lock())?;
     let id = resolve(core, &p.terminal)?;
     if p.caller.as_deref().and_then(crate::terminals::parse_id) == Some(id) {
         return Err(RpcError::new(
@@ -522,6 +523,9 @@ async fn terminal_interrupt(core: Ctx<'_>, p: InterruptParams) -> Result<Interru
 async fn events_subscribe(core: Ctx<'_>, p: SubscribeParams) -> Result<SubscribeResult, RpcError> {
     use crate::events::{Filter, Sink};
     // A terminal on a machine is named as it is here; one here, by its id.
+    if let Some(conn) = core.conn {
+        conn.admit(&core.lock())?;
+    }
     let address = |t: &str| match t.split_once('/').filter(|(m, _)| core.lock().machines.iter().any(|x| x.name == *m)) {
         Some(_) => Ok(t.to_string()),
         None => resolve(core, t).map(crate::terminals::address),
@@ -532,7 +536,6 @@ async fn events_subscribe(core: Ctx<'_>, p: SubscribeParams) -> Result<Subscribe
     let (sink, channel) = match (core.conn, core.plain) {
         (Some(conn), _) => {
             let channel = conn.new_channel();
-            conn.with(|out| out.open(channel));
             (Sink::Framed { conn: conn.clone(), channel }, Some(channel))
         }
         (None, Some(slot)) => {
@@ -546,6 +549,10 @@ async fn events_subscribe(core: Ctx<'_>, p: SubscribeParams) -> Result<Subscribe
     };
     let (seq, terminals) = {
         let mut st = core.lock();
+        if let Sink::Framed { conn, channel } = &sink {
+            conn.admit(&st)?;
+            conn.with(|out| out.open(*channel));
+        }
         let terminals = core.matching(&st, &filter);
         core.subscribe(&mut st, filter, sink);
         (st.events.seq, terminals)

@@ -59,11 +59,30 @@ impl Line {
 
     /// A reply to one of our calls: to whoever waits for it.
     fn take_reply(&self, reply: Value) {
-        let Some((waiter, sink)) = reply["id"].as_u64().and_then(|id| lock(&self.pending).remove(&id)) else { return };
+        let channel = reply["result"]["channel"].as_u64().map(|c| c as u32);
+        let Some((waiter, sink)) = reply["id"].as_u64().and_then(|id| lock(&self.pending).remove(&id)) else {
+            // A timed-out attach may still have succeeded there.
+            if let Some(channel) = channel
+                && !lock(&self.streams).contains_key(&channel)
+                && lock(&self.mirror).1 != Some(channel)
+            {
+                self.close_stream(channel);
+            }
+            return;
+        };
         if let (Some(sink), Some(there)) = (sink, reply["result"]["channel"].as_u64()) {
             lock(&self.streams).insert(there as u32, sink);
         }
-        let _ = waiter.send(reply);
+        if waiter.send(reply).is_err()
+            && let Some(channel) = channel
+        {
+            self.close_stream(channel);
+        }
+    }
+
+    fn close_stream(&self, channel: u32) {
+        lock(&self.streams).remove(&channel);
+        let _ = self.frames.send(wire::encode(channel, wire::CLOSE, b""));
     }
 
     fn message(&self, message: &Value) {
@@ -303,7 +322,10 @@ async fn reattach(core: Arc<Core>, m: Machine, line: Arc<Line>) {
         let reply = line.call_into(&m.name, "terminal.attach", params, Some((r.conn.clone(), here)), deadline).await;
         let mut st = core.lock();
         // Gone meanwhile (the viewer detached): nothing to resume.
-        if !st.relayed.contains_key(&(key, here)) {
+        if r.conn.admit(&st).is_err() || !st.relayed.contains_key(&(key, here)) {
+            if let Some(there) = reply.ok().and_then(|reply| reply["channel"].as_u64()) {
+                line.close_stream(there as u32);
+            }
             continue;
         }
         match reply.ok().and_then(|reply| reply["channel"].as_u64()) {
@@ -723,15 +745,27 @@ pub fn conn_key(conn: &Arc<Conn>) -> usize {
 /// Opens a viewer here on a terminal there: the stream channel there is
 /// relayed to a new channel on this connection, both ways.
 pub async fn attach(core: &Core, conn: &Arc<Conn>, m: &Machine, params: Value) -> Result<Value, RpcError> {
+    conn.admit(&core.lock())?;
     let line = line(core, m).await?;
     let here = conn.new_channel();
-    conn.with(|out| out.open(here));
+    {
+        let st = core.lock();
+        conn.admit(&st)?;
+        conn.with(|out| out.open(here));
+    }
     let deadline = deadline_for(core, "terminal.attach", &params);
     match line.call_into(&m.name, "terminal.attach", params.clone(), Some((conn.clone(), here)), deadline).await {
         Ok(mut r) => {
             let there = r["channel"].as_u64().unwrap_or_default() as u32;
-            let viewer = Relayed { line, there, conn: conn.clone(), machine: m.id.clone(), params };
-            core.lock().relayed.insert((conn_key(conn), here), viewer);
+            {
+                let mut st = core.lock();
+                if let Err(error) = conn.admit(&st) {
+                    line.close_stream(there);
+                    return Err(error);
+                }
+                let viewer = Relayed { line, there, conn: conn.clone(), machine: m.id.clone(), params };
+                st.relayed.insert((conn_key(conn), here), viewer);
+            }
             r["channel"] = here.into();
             Ok(localize(core, &m.name, &[], r))
         }

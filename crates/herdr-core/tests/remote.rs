@@ -126,15 +126,22 @@ fn two_machines_that_added_each_other_never_echo_events_back() {
     });
     let mut c = s.connect();
     c.call(1, "events.subscribe", json!({}));
-    c.call(2, "doc.set", json!({"name": "app", "value": 1, "version": 0}));
+    // Plain subscriptions are notification-only after the initial reply.
+    let written = s.connect().call(2, "doc.set", json!({"name": "app", "value": 1, "version": 0}));
+    assert_eq!(written["result"]["version"], 1);
     // Two sleeping terminals and one document change: a handful of events, not a storm.
     c.reader.get_ref().set_read_timeout(Some(std::time::Duration::from_millis(100))).unwrap();
-    let (started, mut events) = (std::time::Instant::now(), 0);
+    let (started, mut events, mut docs) = (std::time::Instant::now(), 0, 0);
     while started.elapsed() < std::time::Duration::from_secs(2) {
         let mut line = String::new();
-        events += usize::from(std::io::BufRead::read_line(&mut c.reader, &mut line).is_ok_and(|n| n > 0));
+        if std::io::BufRead::read_line(&mut c.reader, &mut line).is_ok_and(|n| n > 0) {
+            events += 1;
+            let event: Value = serde_json::from_str(&line).unwrap();
+            docs += usize::from(event["method"] == "event" && event["params"]["type"] == "doc");
+        }
     }
     assert!(events < 20, "{events} events in 2 s");
+    assert!(docs > 0, "subscription must receive the document change");
     rohan.json(&["machine", "rm", "desk"]); // else it dials a stopped desk back up
 }
 
