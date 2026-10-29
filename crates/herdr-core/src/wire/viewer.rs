@@ -119,6 +119,7 @@ impl ViewerQueue {
         self.generation = self.generation.checked_add(1).ok_or(())?;
         let generation = self.generation;
         let (cols, rows) = source.size;
+        let colors = self.marks.then(|| Box::new(source.colors.clone()));
         let job = Job::new(source, conn).map_err(|_| ())?;
         if self.dropped > 0 || reason == Reason::Resync || (replace && reason == Reason::Stitch) {
             self.mark(Mark::Discontinuity { dropped: self.dropped })?;
@@ -126,7 +127,7 @@ impl ViewerQueue {
         self.dropped = 0;
         self.needs = false;
         self.retry = false;
-        self.mark(Mark::PaintBegin { reason, generation, cols, rows })?;
+        self.mark(Mark::PaintBegin { reason, generation, cols, rows, colors })?;
         self.items.push_back(Item::Paint(Box::new(job)));
         self.mark(Mark::PaintEnd { generation })?;
         self.painting += 1;

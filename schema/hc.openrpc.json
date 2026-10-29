@@ -110,10 +110,31 @@
               "null"
             ]
           },
+          "dark": {
+            "description": "Explicit dark/light preference; absent derives from the default background.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
           "fg": {
             "description": "Default foreground as `#rrggbb`.",
             "type": [
               "string",
+              "null"
+            ]
+          },
+          "palette": {
+            "additionalProperties": false,
+            "default": null,
+            "description": "Sparse default ANSI palette, keys 0..255, values #rrggbb. Some({}) resets\nto the built-in palette; omission keeps the previously known palette.",
+            "patternProperties": {
+              "^\\d+$": {
+                "type": "string"
+              }
+            },
+            "type": [
+              "object",
               "null"
             ]
           }
@@ -2581,7 +2602,9 @@
               "bg": null,
               "cell": null,
               "cursor": null,
-              "fg": null
+              "dark": null,
+              "fg": null,
+              "palette": null
             },
             "description": "The viewer's own colors and cell size, used to answer display queries."
           }

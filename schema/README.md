@@ -273,3 +273,56 @@ A terminal's status is whatever its program reported through OSC 7501, the
 Program Status Protocol (`idle`, `working`,
 `done`, `blocked`, `error`, ...), stored as reported. hc never infers status
 from the screen. Programs that don't speak 7501 have no status.
+
+### Display colors (`display-palette` fork feature)
+
+`Display` (attach's `display`, or a FACTS payload) accepts:
+
+```json
+{"fg":"#dddddd","bg":"#111111","cursor":"#ffffff",
+ "palette":{"0":"#000000","1":"#cc2244","255":"#eeeeee"},"dark":true}
+```
+
+`palette` is an optional sparse map with decimal keys 0–255 and `#rrggbb`
+values. A supplied map replaces the theme over the built-in palette; `{}`
+restores the built-in defaults. Omission/null keeps the previously known
+palette, just as omitted fg/bg/cursor keep previously known facts. Invalid
+palette entries reject attach parameters; invalid FACTS are ignored before
+viewer activity or display state changes. Only the active typing viewer's
+facts apply (observe does not change terminal facts).
+
+Program OSC overrides win over Display defaults, which win over built-in
+colors. OSC 104 (one index or all) and OSC 110/111/112 reset the override to
+the current default layer. `dark` explicitly overrides the preference inferred
+from the Display background. Omission/null removes that explicit override;
+the existing background luminance rule applies. Program OSC 11 changes the
+program color override, not the host's dark/light preference. Core answers
+CSI ?996n; the viewer remains responsible for 2031 change notifications.
+
+Clients requiring color-correct replay negotiate both `paint-marks` and
+`display-palette`, and use `marks:true`. **Before processing paint DATA**, the
+same parser worker applies `paint_begin.colors` as **defaults**, not OSC
+setters. This extra field has the following shape:
+
+```text
+colors: {fg: [r,g,b] | null, bg: [r,g,b] | null,
+         cursor: [r,g,b] | null, palette: [[r,g,b], ... 256 entries], dark: bool}
+```
+
+The following VT paint resets stale overrides and restores only actual program
+OSC overrides, before any indexed-color text. An override equal to the previous
+default is still an override. The default layer must remain distinct so future
+FACTS/theme changes and resets work correctly. Effective default changes queue
+an ordered resync for marked viewers, including changes with no resize. These
+snapshots and marks use P1's existing shared budget, cancellation and CREDIT
+ordering. Unmarked legacy streams keep their original paint representation;
+full layered color replay requires the two features above. Direct core
+connections are required (P1's machine-relay limitation still applies).
+
+Color queries are answered once by core and removed from the viewer stream;
+setters in a mixed set/query OSC still reach viewers. Batch OSC 4 queries use
+the vendor's existing 8 MiB OSC capture bound instead of the relay's generic
+512-byte heuristic. Reset/set operations themselves produce no reply. DA1
+and DA2 retain Ghostty's `CSI ?62;22c` and `CSI >1;10;0c`; XTVERSION reports the
+terminal's stored identity derived from TERM_PROGRAM/TERM_PROGRAM_VERSION,
+not the core binary's command name. XTGETTCAP remains viewer-owned.

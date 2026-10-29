@@ -613,7 +613,8 @@ fn managed_marked_paint_negotiates_and_survives_split_and_coalesced_frames() {
     reader.read_line(&mut hello).unwrap();
     let hello: Value = serde_json::from_str(&hello).unwrap();
     assert!(hello["result"]["features"].as_array().unwrap().iter().any(|f| f == "paint-marks"));
-    let req = json!({"jsonrpc":"2.0","id":2,"method":"terminal.attach","params":{"terminal":run["address"],"cols":80,"rows":24,"marks":true}});
+    assert!(hello["result"]["features"].as_array().unwrap().iter().any(|f| f == "display-palette"));
+    let req = json!({"jsonrpc":"2.0","id":2,"method":"terminal.attach","params":{"terminal":run["address"],"cols":80,"rows":24,"marks":true,"display":{"palette":{"1":"#123456","255":"#abcdef"},"bg":"#ffffff","dark":true}}});
     for byte in wire::encode(0, wire::DATA, req.to_string().as_bytes()) {
         stream.write_all(&[byte]).unwrap();
     }
@@ -642,6 +643,10 @@ fn managed_marked_paint_negotiates_and_survives_split_and_coalesced_frames() {
                 "paint_begin" => {
                     assert!(began.is_none());
                     began = Some(mark["paintGen"].clone());
+                    assert_eq!(mark["colors"]["palette"][1], json!([18, 52, 86]));
+                    assert_eq!(mark["colors"]["palette"][255], json!([171, 205, 239]));
+                    assert_eq!(mark["colors"]["bg"], json!([255, 255, 255]));
+                    assert_eq!(mark["colors"]["dark"], true);
                 }
                 "paint_end" => {
                     assert_eq!(began, Some(mark["paintGen"].clone()));

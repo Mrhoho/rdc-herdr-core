@@ -168,12 +168,12 @@ pub(super) async fn start(
             rows,
             identity: identity.clone(),
         };
-        let id = st.reg.create(new, now_ms())?;
         let mut screen = ghostty_vt::Terminal::new(cols, rows, settings.history_bytes());
         screen.set_xtversion(&identity);
         if let Some(display) = &p.display {
-            display.apply(&mut screen);
+            display.apply(&mut screen).map_err(|e| RpcError::new("unavailable", e.to_string(), "retry the run"))?;
         }
+        let id = st.reg.create(new, now_ms())?;
         st.screens.insert(id, screen);
         let (env, scope) = terminal_env(core, id, &cwd, env);
         st.reg.terminals.get_mut(&id).expect("just created").scope = Some(scope);

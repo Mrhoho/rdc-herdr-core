@@ -7,6 +7,18 @@ thread_local! {
 }
 
 #[test]
+fn initial_display_includes_palette_and_explicit_dark_preference() {
+    let mut screen = ghostty_vt::Terminal::new(80, 24, 1 << 20);
+    let display: Display = serde_json::from_value(serde_json::json!({
+        "palette": {"1": "#123456"}, "bg": "#ffffff", "dark": true
+    }))
+    .unwrap();
+    display.apply(&mut screen).unwrap();
+    assert_eq!(screen.default_colors().palette[1], [0x12, 0x34, 0x56]);
+    assert!(screen.default_colors().dark);
+}
+
+#[test]
 fn resize_drags_serialize_nothing_without_observers_and_only_latest_when_stalled() {
     let root = crate::test_tmp().join(format!("hc-resize-{}", crate::platform::random_hex()));
     let paths = crate::paths::Paths {
