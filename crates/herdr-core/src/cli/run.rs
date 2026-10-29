@@ -25,7 +25,11 @@ pub(super) fn flags_after_task(paths: &Paths, p: RunParams) -> Result<(RunParams
         ..p
     };
     if merged.parent.is_some() && merged.no_parent {
-        return Err(RpcError::new("usage", "--parent and --no-parent together", format!("see `{CLI_NAME} run --help`")));
+        return Err(RpcError::new(
+            "usage",
+            "--parent and --no-parent together",
+            format!("see `{CLI_NAME} run --help`"),
+        ));
     }
     Ok((merged, json))
 }
@@ -86,7 +90,9 @@ pub(super) fn ran(r: &Value) -> Result<Option<Out>, RpcError> {
             (_, Some(sig)) => (Some(format!("{t} ended by signal {sig}")), 128 + sig as i32),
             _ => (Some(format!("{t} ended")), 1),
         },
-        _ if status == "blocked" => (Some(format!("{t} is blocked: read it, then answer with {CLI_NAME} send or {CLI_NAME} keys")), 0),
+        _ if status == "blocked" => {
+            (Some(format!("{t} is blocked: read it, then answer with {CLI_NAME} send or {CLI_NAME} keys")), 0)
+        }
         _ => (Some(format!("{t} is {status}: {CLI_NAME} send {t} <text>")), 0),
     };
     let mut text = r["output"].as_str().unwrap_or_default().trim_end().to_string();

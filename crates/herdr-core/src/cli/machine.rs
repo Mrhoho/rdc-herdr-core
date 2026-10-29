@@ -75,7 +75,8 @@ pub(super) fn machine(
                 }
                 other => other?,
             };
-            let mut human = format!("added {}: {} answers, {CLI_NAME} {}", s(&m["name"]), s(&m["target"]), s(&m["version"]));
+            let mut human =
+                format!("added {}: {} answers, {CLI_NAME} {}", s(&m["name"]), s(&m["target"]), s(&m["version"]));
             if m["keeps_running_after_logout"] == false {
                 human.push_str(&format!(
                     "\nwarning: programs on {} stop when your last login there ends. To fix it, run this on {} once: sudo loginctl enable-linger -- {}",

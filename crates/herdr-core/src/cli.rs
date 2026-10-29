@@ -191,7 +191,8 @@ pub fn main() -> i32 {
     use clap::{CommandFactory, FromArgMatches};
     let cli = match branded_command(Cli::command())
         .try_get_matches_from(std::env::args_os().take(1).chain(args.iter().cloned()))
-        .and_then(|m| Cli::from_arg_matches(&m)) {
+        .and_then(|m| Cli::from_arg_matches(&m))
+    {
         Ok(cli) => cli,
         Err(e) if !e.use_stderr() || !(piped || args.iter().any(|a| a == "--json")) => e.exit(),
         Err(e) => return fail(&RpcError::new("usage", usage_message(&e), format!("see `{CLI_NAME} --help`")), true),
@@ -523,10 +524,13 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool, _owner_token: Option<&str>) ->
             let r = call("terminal.read", to(&p))?;
             let mut human = r["text"].as_str().unwrap_or_default().to_string();
             if r["why"] == "working" {
-                human.push_str(&format!("\n[{CLI_NAME}] only its screen: it is working; read again once it stops for its history"));
+                human.push_str(&format!(
+                    "\n[{CLI_NAME}] only its screen: it is working; read again once it stops for its history"
+                ));
             } else if let Some(state @ ("blocked" | "error")) = r["why"].as_str() {
-                human
-                    .push_str(&format!("\n[{CLI_NAME}] only its screen: it is {state}; history is not scrolled in this state"));
+                human.push_str(&format!(
+                    "\n[{CLI_NAME}] only its screen: it is {state}; history is not scrolled in this state"
+                ));
             } else if r["complete"] == false {
                 human.push_str(&format!("\n[{CLI_NAME}] incomplete: older output may be missing"));
             }
@@ -639,9 +643,9 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool, _owner_token: Option<&str>) ->
             }
             // Only when asked: hc never checks for updates on its own.
             let scratch = crate::releases::Scratch::new()?;
-            let requested = version
-                .as_deref()
-                .map(|v| if !force && !older(&this, &format!("{CLI_NAME} {v}")) { env!("CARGO_PKG_VERSION") } else { v });
+            let requested = version.as_deref().map(|v| {
+                if !force && !older(&this, &format!("{CLI_NAME} {v}")) { env!("CARGO_PKG_VERSION") } else { v }
+            });
             let m = crate::releases::manifest(requested, &scratch.0)?;
             // Apps and scripts built for this generation would break on another one.
             if m.generation != crate::api::GENERATION && !force {

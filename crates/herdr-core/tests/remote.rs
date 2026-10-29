@@ -663,6 +663,10 @@ fn attaching_to_a_terminal_on_another_machine() {
     let t = run(&s, &["--on", "rohan", "sh", "-c", "echo ready; read l; echo got-$l; read l"]);
     let size = |s: &Session, t: &str| (get(s, t)["cols"].as_u64(), get(s, t)["rows"].as_u64());
     let headless = size(&rohan, "t1");
+    let mut marked = common::framed::Framed::open(&s);
+    let rejected = marked.call("terminal.attach", json!({"terminal":t,"cols":43,"rows":11,"marks":true}));
+    assert_eq!(rejected["error"]["data"]["kind"], "marks_local_only");
+    assert_eq!(size(&rohan, "t1"), headless, "rejected relay must not register a viewer");
 
     let mut v = Viewer::attach(&s, &t, 100, 30, json!({}));
     v.shows("ready");

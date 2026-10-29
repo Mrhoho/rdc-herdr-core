@@ -37,6 +37,7 @@ async fn image_streams_share_one_timer_task_and_keep_the_latest_deadline() {
             &viewer,
             id,
             AttachRequest {
+                marks: false,
                 observe: false,
                 resize_notifications: false,
                 history: 0,
@@ -157,6 +158,7 @@ async fn handover_carries_held_replies_and_answers_including_final_holder_output
             &viewer,
             id,
             AttachRequest {
+                marks: false,
                 observe: false,
                 resize_notifications: false,
                 history: 0,
@@ -240,6 +242,7 @@ async fn keys_pressed_during_a_paste_follow_its_submit() {
             &person,
             id,
             AttachRequest {
+                marks: false,
                 observe: false,
                 resize_notifications: false,
                 history: 0,

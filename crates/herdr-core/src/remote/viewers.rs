@@ -134,6 +134,13 @@ pub(super) fn negotiate_resize(line: &Line, params: &mut Value) {
 /// Opens a viewer here on a terminal there: the stream channel there is
 /// relayed to a new channel on this connection, both ways.
 pub async fn attach(core: &Core, conn: &Arc<Conn>, m: &Machine, mut params: Value) -> Result<Value, RpcError> {
+    if params.get("marks").and_then(Value::as_bool) == Some(true) {
+        return Err(RpcError::new(
+            "marks_local_only",
+            "paint marks require a direct core connection",
+            "connect directly to the terminal core",
+        ));
+    }
     conn.admit(&core.lock())?;
     let line = line(core, m).await?;
     negotiate_resize(&line, &mut params);

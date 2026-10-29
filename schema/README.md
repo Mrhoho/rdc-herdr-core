@@ -58,6 +58,7 @@ most 16 MiB.
 | 4 | FOCUS | viewer → core: 1 gained focus, 0 lost it |
 | 5 | FACTS | viewer → core: JSON display facts (`Display` in the schema) |
 | 6 | AUTOMATIC_INPUT | viewer → core: terminal-generated reply bytes, not human activity |
+| 6 | MARK | core → viewer: ordered paint metadata (opt-in, see below) |
 
 Channel 0 carries JSON-RPC both ways. Calls on it run side by side.
 
@@ -106,6 +107,54 @@ Flow control: a stream starts with 256 KiB of credit. The viewer sends
 CREDIT for the bytes it has written out. A viewer that falls more than
 4 MiB behind gets a fresh repaint instead of the backlog. A stalled stream
 never blocks channel 0 or other streams.
+
+
+### Ordered paint marks (fork extension)
+
+Check `hello.features` for `paint-marks`, then pass `marks: true` to
+`terminal.attach`. This is available on a **direct connection to the terminal's
+core**; a machine-relayed marked attach returns `marks_local_only` instead of
+silently losing markers. Omitted/false preserves the unmarked VT paint bytes.
+
+MARK payloads are JSON, on the attach channel, interleaved with DATA in one queue:
+
+- `{"type":"paint_begin","reason":"attach|resync|stitch","paintGen":1,"cols":80,"rows":24}`
+- `{"type":"paint_end","paintGen":1}`
+- `{"type":"discontinuity","droppedBytes":123}`
+
+The reason is one of the three strings (not the literal string with `|`). The
+generation increases per attach; reconnect starts a new stream and generation.
+The begin grid belongs to that frozen paint. A marked viewer's actual grid change
+invalidates the old transaction and sends a resync at the new size. MARK consumes
+**no DATA credit**, but cannot jump over pending DATA. Process both frame kinds
+in the same parser worker. Reset the VT parser on discontinuity, accept only a
+matching end, and suppress external VT effects throughout replay. The paint tail
+restores the captured partial parser sequence, **after** 9001/7501 metadata, so
+subsequent live UTF-8/CSI/OSC bytes can complete it correctly.
+
+Overflow drops queued DATA and MARK together and enqueues discontinuity, begin,
+lazy DATA, end. A partially sent old transaction has no end; discontinuity aborts
+it. `droppedBytes` counts discarded generated DATA and suppressed live bytes;
+not-yet-generated paint has no byte count. An already handed-off socket frame
+precedes the discontinuity and is not counted as discarded. Replacing an active
+paint protects the new paint: further live bytes are suppressed and counted in
+one deferred resync, captured after that paint completes. This bounds retries
+under continuous output. Stitch counts its suppressed bytes and uses the same
+ordered enqueue; marked stitch invalidates pending old paint. Upgrade recovery
+uses an ordinary attach transaction.
+
+Paint generation is lazy (at most 16 KiB per credit permit) over an immutable
+snapshot, including when the paint is larger than 4 MiB. The shared config key
+`viewer_pending_bytes` defaults to 67108864 (64 MiB), read at server start. It
+accounts for queued payload/storage, frozen snapshots, decoded Ghostty clones,
+producer chunks and reserved worker stacks. It is a pending-memory budget, not
+an RSS limit: canonical screens, existing control queues, kernel buffers and
+one in-flight wire frame (at most 16 KiB plus header per connection) are separate.
+If a source/queue/worker cannot fit, that stream closes with `paint_limit`; its
+terminal keeps running. A client may retry with less history or fewer viewers.
+`server.status.viewer_pending` reports limit/used/peak/denied, generated paint
+bytes and active paint workers. Closing a connection cancels its producers and
+reclaims their allocations without waiting for credit.
 
 A viewer detaches by sending CLOSE; the core answers with an empty CLOSE.
 When the program ends, the core sends CLOSE with

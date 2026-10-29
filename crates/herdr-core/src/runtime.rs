@@ -21,6 +21,8 @@ mod persistence;
 use persistence::RegistryWriter;
 
 pub struct Core {
+    pub paint_budget: Arc<ghostty_vt::budget::Budget>,
+    pub paint_metrics: Arc<crate::paint::Metrics>,
     pub info: CoreInfo,
     pub login_session: Option<platform::LoginSession>,
     pub started: Instant,
@@ -184,7 +186,10 @@ impl Core {
         let machines = read_state(&paths.state.join("machines.json"))?;
         let peers = read_state(&paths.state.join("peers.json"))?;
         let (jobs, jobs_rx) = tokio::sync::mpsc::unbounded_channel();
+        let paint_limit = crate::config::load(&paths.config).unwrap_or_default().viewer_pending_bytes();
         let core = Arc::new(Core {
+            paint_budget: ghostty_vt::budget::Budget::new(paint_limit),
+            paint_metrics: Default::default(),
             info,
             login_session: platform::login_session(),
             started: Instant::now(),
@@ -804,6 +809,7 @@ impl Core {
             relay.flush(screen);
         }
         self.queue_resize_paints(st, id, None);
+        self.complete_paints(st, id);
         for v in st.viewers.remove(&id).unwrap_or_default() {
             v.conn.with(|out| out.finish(v.channel, end.to_string().as_bytes()));
         }

@@ -368,9 +368,17 @@ async fn write_frames(core: Arc<Core>, conn: Arc<Conn>, mut write: Writer) -> io
         conn.wake.notified().await;
         core.prepare_repaints(&conn);
         loop {
+            core.prepare_paints(&conn);
             let next = conn.outbox().next_frame();
             match next {
-                Some(frame) => write.write_all(&frame).await?,
+                Some(frame) => {
+                    if frame[4] == wire::CLOSE {
+                        let channel = u32::from_le_bytes(frame[..4].try_into().unwrap());
+                        core.detach(&conn, Some(channel));
+                    }
+                    write.write_all(&frame).await?;
+                }
+                None if core.prepare_paints(&conn) => continue,
                 None => break,
             }
         }

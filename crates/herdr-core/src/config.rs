@@ -10,6 +10,8 @@ use std::time::Duration;
 pub struct Config {
     /// Executable and arguments for new shells (default: this machine's shell).
     pub shell: Option<Vec<String>>,
+    /// Shared viewer queue / frozen paint budget in bytes; read at server start.
+    pub viewer_pending_bytes: Option<usize>,
     /// SHA-256 verifier only; never a plaintext owner token. Managed builds only.
     #[cfg(feature = "managed")]
     pub owner_token_sha256: Option<String>,
@@ -72,6 +74,10 @@ impl Config {
             Some(argv) if argv.first().is_some_and(|exe| !exe.is_empty()) => Ok(argv.clone()),
             Some(_) => Err(invalid("shell: give an executable and optional arguments, like [\"nu\"]".into())),
         }
+    }
+
+    pub fn viewer_pending_bytes(&self) -> usize {
+        self.viewer_pending_bytes.unwrap_or(64 << 20)
     }
 
     pub fn headless(&self) -> Result<(u16, u16), RpcError> {

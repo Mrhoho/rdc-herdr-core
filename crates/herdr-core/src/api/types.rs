@@ -154,6 +154,7 @@ pub struct HolderInfo {
 
 #[derive(Serialize, JsonSchema)]
 pub struct StatusResult {
+    pub viewer_pending: crate::paint::Stats,
     pub core: CoreInfo,
     pub version: String,
     pub build: BuildInfo,
@@ -410,6 +411,10 @@ pub struct ReadResult {
 
 #[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
 pub struct AttachParams {
+    /// Ordered MARK frames (hello feature paint-marks), local terminals only.
+    #[arg(skip)]
+    #[serde(default)]
+    pub marks: bool,
     /// The terminal: `t7`, a name, or `machine/t7`.
     #[arg(default_value = "", hide_default_value = true)]
     pub terminal: String,
