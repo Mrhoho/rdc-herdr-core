@@ -31,6 +31,8 @@ pub enum Mark {
         generation: u64,
         cols: u16,
         rows: u16,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        colors: Option<Box<ColorDefaults>>,
     },
     PaintEnd {
         #[serde(rename = "paintGen")]
@@ -56,6 +58,7 @@ pub struct Source {
     snapshot: Bytes,
     tail: Bytes,
     pub size: (u16, u16),
+    pub colors: ColorDefaults,
     history: usize,
     continuation: bool,
     budget: Arc<Budget>,
@@ -83,6 +86,7 @@ impl Source {
             snapshot,
             tail,
             size: screen.size(),
+            colors: ColorDefaults(screen.default_colors()),
             history,
             continuation,
             budget: budget.clone(),
@@ -191,9 +195,14 @@ impl Job {
                     // Do not decode or format before the first actual CREDIT grant.
                     let result = (|| {
                         sink.permit()?;
-                        let frozen = ghostty_vt::Terminal::restore_budget(source.snapshot.as_slice(), &source.budget)
-                            .ok_or_else(|| io::Error::other("paint_limit"))?;
-                        frozen.paint_to(source.history, &mut sink)?;
+                        let mut frozen =
+                            ghostty_vt::Terminal::restore_budget(source.snapshot.as_slice(), &source.budget)
+                                .ok_or_else(|| io::Error::other("paint_limit"))?;
+                        if source.continuation {
+                            frozen.paint_with_colors_to(source.history, &mut sink)?;
+                        } else {
+                            frozen.paint_to(source.history, &mut sink)?;
+                        }
                         sink.write_all(source.tail.as_slice())?;
                         if source.continuation {
                             frozen.continuation_to(&mut sink)?;
@@ -299,5 +308,23 @@ impl Stats {
             generated_paint_bytes: metrics.generated.load(Ordering::Relaxed),
             paint_workers: metrics.workers.load(Ordering::Relaxed),
         }
+    }
+}
+
+/// MARK default layer. OSC in the following paint restores only the program
+/// overrides. Arrays are RGB bytes, palette always has exactly 256 entries.
+#[derive(Clone)]
+pub struct ColorDefaults(pub ghostty_vt::Colors);
+impl serde::Serialize for ColorDefaults {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let c = &self.0;
+        let mut s = serializer.serialize_struct("ColorDefaults", 5)?;
+        s.serialize_field("fg", &c.fg)?;
+        s.serialize_field("bg", &c.bg)?;
+        s.serialize_field("cursor", &c.cursor)?;
+        s.serialize_field("palette", c.palette.as_slice())?;
+        s.serialize_field("dark", &c.dark)?;
+        s.end()
     }
 }

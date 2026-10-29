@@ -45,6 +45,7 @@ mod ffi {
     pub const OPT_COLOR_FOREGROUND: i32 = 11;
     pub const OPT_COLOR_BACKGROUND: i32 = 12;
     pub const OPT_COLOR_CURSOR: i32 = 13;
+    pub const OPT_COLOR_PALETTE: i32 = 14;
     pub const OPT_SCROLLBACK_MAX_BYTES: i32 = 27;
     pub const OPT_CONTINUATION_MAX_BYTES: i32 = 31;
     pub const DATA_COLS: i32 = 1;
@@ -52,6 +53,14 @@ mod ffi {
     pub const DATA_ACTIVE_SCREEN: i32 = 6;
     pub const DATA_SCROLLBAR: i32 = 9;
     pub const DATA_TITLE: i32 = 12;
+    pub const DATA_COLOR_FOREGROUND: i32 = 18;
+    pub const DATA_COLOR_BACKGROUND: i32 = 19;
+    pub const DATA_COLOR_CURSOR: i32 = 20;
+    pub const DATA_COLOR_PALETTE: i32 = 21;
+    pub const DATA_COLOR_FOREGROUND_DEFAULT: i32 = 22;
+    pub const DATA_COLOR_BACKGROUND_DEFAULT: i32 = 23;
+    pub const DATA_COLOR_CURSOR_DEFAULT: i32 = 24;
+    pub const DATA_COLOR_PALETTE_DEFAULT: i32 = 25;
     pub const DATA_MODE: i32 = 37;
     pub const FORMAT_PLAIN: i32 = 0;
     pub const FORMAT_VT: i32 = 1;
@@ -297,6 +306,7 @@ struct Hooks {
     xtversion: String,
     cell: (u32, u32),
     dark: bool,
+    dark_override: Option<bool>,
 }
 
 /// One parsed terminal. Owns its libghostty handle.
@@ -359,7 +369,7 @@ extern "C" fn on_size(t: ffi::Terminal, ud: *mut c_void, out: *mut ffi::SizeRepo
 
 extern "C" fn on_color_scheme(_: ffi::Terminal, ud: *mut c_void, out: *mut i32) -> bool {
     let hooks = unsafe { &*ud.cast::<Hooks>() };
-    unsafe { *out = hooks.dark as i32 };
+    unsafe { *out = hooks.dark_override.unwrap_or(hooks.dark) as i32 };
     true
 }
 
@@ -386,7 +396,9 @@ impl Terminal {
         let mut raw = ptr::null_mut();
         let rc = unsafe { ffi::ghostty_terminal_new(ptr::null(), &mut raw, cols.max(1), rows.max(1)) };
         assert_eq!(rc, ffi::SUCCESS, "ghostty_terminal_new failed");
-        Terminal::wrap(raw, scrollback_bytes)
+        let mut term = Terminal::wrap(raw, scrollback_bytes);
+        term.set_display(Some(DEFAULT_FG), Some(DEFAULT_BG), Some(DEFAULT_FG), None);
+        term
     }
 
     fn wrap(raw: ffi::Terminal, scrollback_bytes: usize) -> Terminal {
@@ -397,6 +409,7 @@ impl Terminal {
             xtversion: String::new(),
             cell: DEFAULT_CELL,
             dark: true,
+            dark_override: None,
         });
         let term = Terminal { raw, hooks, allocator: None };
         let ud: *const Hooks = &*term.hooks;
@@ -415,7 +428,9 @@ impl Terminal {
             set(ffi::OPT_TITLE_CHANGED, on_title_changed as *const c_void);
         }
         let mut term = term;
-        term.set_display(Some(DEFAULT_FG), Some(DEFAULT_BG), Some(DEFAULT_FG), None);
+        if let Some([r, g, b]) = term.default_colors().bg {
+            term.hooks.dark = (r as u32 * 299 + g as u32 * 587 + b as u32 * 114) / 1000 < 128;
+        }
         term
     }
 
@@ -927,3 +942,9 @@ pub mod budget;
 mod paint_tests;
 
 mod paint;
+
+#[cfg(test)]
+mod color_tests;
+
+mod colors;
+pub use colors::{Colors, parse_color};

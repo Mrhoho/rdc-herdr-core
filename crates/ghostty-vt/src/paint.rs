@@ -108,6 +108,20 @@ impl Terminal {
     /// Runtime metadata and continuation are deliberately separate: metadata
     /// must precede the unfinished parser suffix, never be inserted inside it.
     pub fn paint_to(&self, history: usize, writer: &mut impl Write) -> io::Result<()> {
+        self.paint_impl(history, None, writer)
+    }
+    /// Marked replay: defaults are carried by paint_begin.colors, only program
+    /// overrides are emitted as OSC, after DECSTR and before indexed text.
+    pub fn paint_with_colors_to(&mut self, history: usize, writer: &mut impl Write) -> io::Result<()> {
+        let overrides = self.color_overrides()?;
+        self.paint_impl(history, Some(&overrides), writer)
+    }
+    fn paint_impl(
+        &self,
+        history: usize,
+        colors: Option<&crate::colors::Overrides>,
+        writer: &mut impl Write,
+    ) -> io::Result<()> {
         let (cols, rows) = self.size();
         let last = (cols.saturating_sub(1), rows.saturating_sub(1) as u32);
         writer.write_all(
@@ -115,6 +129,9 @@ impl Terminal {
 \x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1016l\x1b[?2004l\x1b[?1l\x1b[?66l\x1b[?2031l\x1b[?2048l\x1b[=0;1u\
 \x1b[?1049l\x1b[?1047l\x1b[?47l\x1b[H\x1b[2J",
         )?;
+        if let Some(colors) = colors {
+            colors.write(writer)?;
+        }
         let available = self.history_rows();
         if history > 0 && available > 0 && !self.alt_screen() {
             let from = available.saturating_sub(history.min(u32::MAX as usize) as u32);

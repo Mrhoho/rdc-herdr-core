@@ -16,6 +16,12 @@ use std::time::Instant;
 /// What a viewer's own terminal looks like, reported by the client.
 #[derive(Serialize, Deserialize, JsonSchema, Clone, Default, Debug, PartialEq)]
 pub struct Display {
+    /// Sparse default ANSI palette, keys 0..255, values #rrggbb. Some({}) resets
+    /// to the built-in palette; omission keeps the previously known palette.
+    #[serde(default, deserialize_with = "palette")]
+    pub palette: Option<std::collections::BTreeMap<u8, String>>,
+    /// Explicit dark/light preference; absent derives from the default background.
+    pub dark: Option<bool>,
     /// Default foreground as `#rrggbb`.
     pub fg: Option<String>,
     /// Default background as `#rrggbb`.
@@ -42,6 +48,16 @@ fn rgb(hex: &Option<String>) -> Option<Rgb> {
     let hex = hex.as_deref()?.strip_prefix('#')?;
     let n = u32::from_str_radix(hex, 16).ok().filter(|_| hex.len() == 6)?;
     Some([(n >> 16) as u8, (n >> 8) as u8, n as u8])
+}
+
+fn palette<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<std::collections::BTreeMap<u8, String>>, D::Error> {
+    let value = Option::<std::collections::BTreeMap<u8, String>>::deserialize(deserializer)?;
+    if value.as_ref().is_some_and(|p| p.values().any(|v| rgb(&Some(v.clone())).is_none())) {
+        return Err(serde::de::Error::custom("invalid_palette"));
+    }
+    Ok(value)
 }
 
 pub struct AttachRequest {
@@ -267,21 +283,36 @@ impl Core {
         let (cols, rows) = leader.map_or_else(|| self.headless(), |v| v.size);
         let display = leader.map(|v| v.display.clone());
         let Some(screen) = st.screens.get_mut(&id) else { return };
+        let before_colors = screen.default_colors();
         if let Some(d) = display {
+            let entries = d.palette.as_ref().map(|p| {
+                p.iter().map(|(i, c)| (*i, rgb(&Some(c.clone())).expect("validated palette"))).collect::<Vec<_>>()
+            });
+            if screen.set_palette(entries.as_deref()).is_err() {
+                for v in st.viewers.get(&id).into_iter().flatten() {
+                    v.conn.with(|out| out.close(v.channel, br#"{"reason":"display_failed"}"#));
+                }
+                return;
+            }
             screen.set_display(rgb(&d.fg), rgb(&d.bg), rgb(&d.cursor), d.cell.map(|[w, h]| (w, h)));
+            screen.set_dark(d.dark);
         }
+        let colors_changed = screen.default_colors() != before_colors;
         let rec = st.reg.terminals.get_mut(&id).expect("live terminal");
-        if (rec.cols, rec.rows) == (cols, rows) || cols == 0 || rows == 0 {
+        let resized = (rec.cols, rec.rows) != (cols, rows) && cols > 0 && rows > 0;
+        if resized {
+            screen.resize(cols, rows);
+            rec.cols = cols;
+            rec.rows = rows;
+            if let Some(link) = st.link(id) {
+                link.send(&proto::json_frame(proto::RESIZE, id, &proto::Size { cols, rows }));
+            }
+            self.save_soon();
+            self.emit(st, "size", id, serde_json::json!({"cols":cols,"rows":rows}));
+        }
+        if !resized && !colors_changed {
             return;
         }
-        screen.resize(cols, rows);
-        rec.cols = cols;
-        rec.rows = rows;
-        if let Some(link) = st.link(id) {
-            link.send(&proto::json_frame(proto::RESIZE, id, &proto::Size { cols, rows }));
-        }
-        self.save_soon();
-        self.emit(st, "size", id, serde_json::json!({"cols": cols, "rows": rows}));
         for v in st.viewers.get(&id).into_iter().flatten().filter(|v| v.marks) {
             self.enqueue_paint(st, id, &v.conn, v.channel, 0, crate::paint::Reason::Resync, true, 0);
         }

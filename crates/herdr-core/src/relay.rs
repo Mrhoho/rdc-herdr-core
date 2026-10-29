@@ -12,6 +12,9 @@ const BEL: u8 = 0x07;
 /// Queries are short; anything longer is passed through unexamined.
 const MAX_CSI: usize = 64;
 const MAX_STRING: usize = 512;
+// Ghostty permits allocating color OSCs up to 8 MiB. Keep those intact so
+// batched queries are not forwarded just because they exceed 512 bytes.
+const MAX_COLOR_STRING: usize = (8 << 20) + 16;
 
 #[derive(Default)]
 pub struct Relay {
@@ -71,6 +74,10 @@ impl Relay {
                     screen.write(&seq);
                     if screen.pending_responses() == before {
                         out.extend_from_slice(&seq); // not answered here: the viewer may
+                    } else {
+                        // One OSC can both set and query. Only the queries
+                        // belong exclusively to core; setters must reach VT viewers.
+                        out.extend(color_mutations(&seq));
                     }
                 } else {
                     if let Some(on) = win32_input(&seq) {
@@ -120,7 +127,7 @@ impl Relay {
                         _ => body.starts_with(b"$q") || body.starts_with(b"+q"),
                     };
                     Seq::Done { maybe_query: query }
-                } else if h.len() > MAX_STRING {
+                } else if h.len() > if color_command(h).is_some() { MAX_COLOR_STRING } else { MAX_STRING } {
                     Seq::Done { maybe_query: false }
                 } else {
                     Seq::Pending
@@ -129,6 +136,57 @@ impl Relay {
             Some(_) => Seq::Done { maybe_query: false },
         }
     }
+}
+
+fn color_command(seq: &[u8]) -> Option<(u16, &[u8])> {
+    let body = seq.strip_prefix(b"\x1b]")?;
+    let semi = body.iter().position(|b| *b == b';')?;
+    let kind = std::str::from_utf8(&body[..semi]).ok()?.parse::<u16>().ok()?;
+    (kind == 4 || (10..=12).contains(&kind)).then_some((kind, &body[semi + 1..]))
+}
+fn color_mutations(seq: &[u8]) -> Vec<u8> {
+    let Some((kind, body)) = color_command(seq) else { return Vec::new() };
+    let body = body.strip_suffix(b"\x07").or_else(|| body.strip_suffix(b"\x1b\\")).unwrap_or(body);
+    let mut tokens = body.split(|b| *b == b';').filter(|s| !s.is_empty());
+    let mut out = Vec::new();
+    if kind == 4 {
+        let mut payload = Vec::new();
+        while let (Some(index), Some(value)) = (tokens.next(), tokens.next()) {
+            // An invalid index stops Ghostty's entire operation list, even if
+            // that operation was a query. Do not skip it and revive later sets.
+            let valid = std::str::from_utf8(index).ok().and_then(|s| s.parse::<u16>().ok()).is_some_and(|i| i <= 259);
+            if !valid {
+                break;
+            }
+            if value != b"?" {
+                if ghostty_vt::parse_color(value).is_none() {
+                    break;
+                }
+                payload.extend_from_slice(b";");
+                payload.extend_from_slice(index);
+                payload.extend_from_slice(b";");
+                payload.extend_from_slice(value);
+            }
+        }
+        if !payload.is_empty() {
+            out.extend_from_slice(b"\x1b]4");
+            out.extend(payload);
+            out.extend_from_slice(b"\x1b\\");
+        }
+    } else {
+        for (i, value) in tokens.take((20 - kind) as usize).enumerate() {
+            if value == b"?" {
+                continue;
+            }
+            if ghostty_vt::parse_color(value).is_none() {
+                break;
+            }
+            out.extend_from_slice(format!("\x1b]{};", kind + i as u16).as_bytes());
+            out.extend_from_slice(value);
+            out.extend_from_slice(b"\x1b\\");
+        }
+    }
+    out
 }
 
 /// `CSI ? … 9001 … h` or `l`: whether it turns win32-input-mode on.
@@ -216,5 +274,57 @@ mod tests {
         let long = format!("\x1b]52;c;{}?\x07after", "A".repeat(2000));
         let out = feed_bytewise(&mut relay, &mut screen, long.as_bytes());
         assert_eq!(out, long.as_bytes());
+    }
+}
+
+#[cfg(test)]
+mod color_tests {
+    use super::*;
+    #[test]
+    fn mixed_color_set_query_and_resets_keep_mutations_but_reply_once() {
+        for split in [false, true] {
+            let mut core = Screen::new(80, 24, 0);
+            let mut viewer = Screen::new(80, 24, 0);
+            let mut relay = Relay::default();
+            let bytes = b"\x1b]4;1;#123456;2;?;1;?\x07\x1b]10;#abcdef;?\x07";
+            let out = if split {
+                bytes.iter().flat_map(|b| relay.feed(&mut core, &[*b])).collect()
+            } else {
+                relay.feed(&mut core, bytes)
+            };
+            viewer.write(&out);
+            assert!(viewer.take_responses().is_empty(), "query leaked");
+            assert_eq!(viewer.colors(), core.colors(), "set portion was lost");
+            let replies = core.take_responses();
+            assert_eq!(replies.iter().filter(|b| **b == BEL).count(), 3);
+            let reset = b"\x1b]104;1\x07\x1b]110\x07\x1b]111\x07\x1b]112\x07";
+            viewer.write(&relay.feed(&mut core, reset));
+            assert_eq!(viewer.colors(), core.colors());
+            assert!(core.take_responses().is_empty());
+            assert!(viewer.take_responses().is_empty());
+        }
+    }
+}
+
+#[cfg(test)]
+mod batch_color_tests {
+    use super::*;
+    #[test]
+    fn full_palette_queries_and_invalid_suffixes_never_duplicate_or_revive_operations() {
+        let mut t = Screen::new(80, 24, 0);
+        let mut v = Screen::new(80, 24, 0);
+        let mut r = Relay::default();
+        let mut query = b"\x1b]4".to_vec();
+        for i in 0..256 {
+            query.extend_from_slice(format!(";{i};?").as_bytes());
+        }
+        query.push(BEL);
+        let out: Vec<u8> = query.iter().flat_map(|b| r.feed(&mut t, &[*b])).collect();
+        assert!(out.is_empty());
+        assert_eq!(t.take_responses().iter().filter(|b| **b == BEL).count(), 256);
+        let mixed = b"\x1b]4;1;?;400;?;2;red\x07\x1b]10;?;not-a-color;red\x07";
+        v.write(&r.feed(&mut t, mixed));
+        assert!(v.take_responses().is_empty());
+        assert_eq!(v.colors(), t.colors());
     }
 }
