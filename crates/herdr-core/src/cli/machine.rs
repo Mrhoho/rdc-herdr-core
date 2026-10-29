@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::api::{MachineAddParams, MachineParams, MachineRenameParams};
+use crate::branding::COMMAND as CLI_NAME;
 
 #[derive(Subcommand)]
 pub(super) enum MachineCmd {
@@ -45,9 +46,13 @@ pub(super) fn machine(
             }
             let m = match call("machine.add", to(&p)) {
                 Err(e) if (p.install || at_terminal()) && matches!(e.kind.as_str(), "hc_missing" | "incompatible") => {
-                    let what = if e.kind == "hc_missing" { "has no hc" } else { "has an hc too old to talk to" };
+                    let what = if e.kind == "hc_missing" {
+                        &format!("has no {CLI_NAME}")
+                    } else {
+                        &format!("has an {CLI_NAME} too old to talk to")
+                    };
                     if !p.install {
-                        eprint!("{target} {what}. Copy this hc ({}) there? [Y/n] ", env!("CARGO_PKG_VERSION"));
+                        eprint!("{target} {what}. Copy this {CLI_NAME} ({}) there? [Y/n] ", env!("CARGO_PKG_VERSION"));
                         let mut answer = String::new();
                         std::io::stdin().read_line(&mut answer).map_err(|err| RpcError::internal(err.to_string()))?;
                         if answer.trim().to_lowercase().starts_with('n') {
@@ -60,7 +65,8 @@ pub(super) fn machine(
                 }
                 other => other?,
             };
-            let human = format!("added {}: {} answers, hc {}", s(&m["name"]), s(&m["target"]), s(&m["version"]));
+            let human =
+                format!("added {}: {} answers, {CLI_NAME} {}", s(&m["name"]), s(&m["target"]), s(&m["version"]));
             Out { json: m, human }
         }
         MachineCmd::Ls => {
@@ -73,15 +79,18 @@ pub(super) fn machine(
                     let session = m["session"].as_str().map(|x| format!(" session {x}")).unwrap_or_default();
                     let state = line_state(m);
                     format!(
-                        "{:<16} {state}  \x1b[2m{}{session} \u{b7} hc {}\x1b[22m",
+                        "{:<16} {state}  \x1b[2m{}{session} \u{b7} {CLI_NAME} {}\x1b[22m",
                         s(&m["name"]),
                         s(&m["target"]),
                         s(&m["version"])
                     )
                 })
                 .collect();
-            let human =
-                if rows.is_empty() { "no machines yet: hc machine add <ssh-target>".into() } else { rows.join("\n") };
+            let human = if rows.is_empty() {
+                format!("no machines yet: {CLI_NAME} machine add <ssh-target>")
+            } else {
+                rows.join("\n")
+            };
             Out { json: r, human }
         }
         MachineCmd::Login(p) => {
@@ -98,7 +107,7 @@ pub(super) fn machine(
                 return Err(RpcError::new(
                     "machine_unknown",
                     format!("unknown machine {:?}", p.machine),
-                    "see `hc machine ls`",
+                    format!("see `{CLI_NAME} machine ls`"),
                 ));
             };
             crate::machines::login(paths, reach_of(m))?;
@@ -114,7 +123,7 @@ pub(super) fn machine(
                 return Err(RpcError::new(
                     "machine_unknown",
                     format!("unknown machine {:?}", p.machine),
-                    "see `hc machine ls`",
+                    format!("see `{CLI_NAME} machine ls`"),
                 ));
             };
             let version = crate::machines::install(paths, reach_of(&m), m["session"].as_str())?;

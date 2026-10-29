@@ -2,6 +2,7 @@
 //! (a named pipe on Windows).
 
 use crate::api::{self, CoreInfo};
+use crate::branding::COMMAND as CLI_NAME;
 use crate::paths::Paths;
 use crate::platform::{self, AsyncListener};
 use crate::rpc::{self, RpcError};
@@ -408,7 +409,7 @@ async fn handle(
             None => Err(RpcError::new(
                 "needs_framed",
                 "attach needs a framed connection",
-                "send hello with framed: true first, or use `hc attach`",
+                format!("send hello with framed: true first, or use `{CLI_NAME} attach`"),
             )),
         },
         Ok(Some((to, params))) => crate::remote::forward_to(core, &to, method, params).await,

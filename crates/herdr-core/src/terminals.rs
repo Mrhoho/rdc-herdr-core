@@ -1,6 +1,7 @@
 //! Terminal records: ids, names, labels, lifecycle facts and retention.
 //! Pure state, no IO; the core persists `Registry` as JSON.
 
+use crate::branding::COMMAND as CLI_NAME;
 use crate::rpc::RpcError;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -316,9 +317,9 @@ impl Registry {
                 .live_named(local)
                 .or_else(|| self.terminals.values().rev().find(|t| t.name.as_deref() == Some(local))),
         };
-        found
-            .map(Terminal::id)
-            .ok_or_else(|| RpcError::new("not_found", format!("no terminal {local:?}"), "see `hc ls --all`"))
+        found.map(Terminal::id).ok_or_else(|| {
+            RpcError::new("not_found", format!("no terminal {local:?}"), format!("see `{CLI_NAME} ls --all`"))
+        })
     }
 
     pub fn finish(&mut self, id: u32, code: Option<i32>, signal: Option<i32>, reason: &str, now_ms: u64) {

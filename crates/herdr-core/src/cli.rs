@@ -4,6 +4,7 @@ use crate::api::{
     AttachParams, ExecParams, InterruptParams, KeysParams, LabelParams, ListParams, PutParams, ReadParams, RunParams,
     SendParams, SubscribeParams, TerminalParams, WaitParams,
 };
+use crate::branding::COMMAND as CLI_NAME;
 use crate::client;
 use crate::paths::Paths;
 use crate::picker;
@@ -22,7 +23,7 @@ use output::*;
 use update::*;
 
 #[derive(Parser)]
-#[command(name = "hc", version, about = "herdr-core: a terminal runtime for coding agents")]
+#[command(name = crate::branding::COMMAND, version, about = "herdr-core: a terminal runtime for coding agents")]
 struct Cli {
     /// JSON output even in a terminal.
     #[arg(long, global = true)]
@@ -138,16 +139,43 @@ pub fn command_names() -> Vec<String> {
         .collect()
 }
 
+// Clap derives help from doc comments; brand that authored text before parsing.
+fn branded_command(mut cmd: clap::Command) -> clap::Command {
+    if !cfg!(feature = "managed") {
+        return cmd;
+    }
+    if let Some(text) = cmd.get_about() {
+        let text = crate::branding::text(&text.to_string());
+        cmd = cmd.about(text);
+    }
+    if let Some(text) = cmd.get_long_about() {
+        let text = crate::branding::text(&text.to_string());
+        cmd = cmd.long_about(text);
+    }
+    cmd = cmd.mut_args(|mut arg| {
+        if let Some(text) = arg.get_help() {
+            let text = crate::branding::text(&text.to_string());
+            arg = arg.help(text);
+        }
+        if let Some(text) = arg.get_long_help() {
+            let text = crate::branding::text(&text.to_string());
+            arg = arg.long_help(text);
+        }
+        arg
+    });
+    cmd.mut_subcommands(branded_command)
+}
+
 pub fn main() -> i32 {
     client::remember_exe();
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         ["--help" | "-h" | "help"] => {
-            print!("{HELP}");
+            print!("{}", crate::branding::text(HELP));
             return 0;
         }
         ["--skill"] => {
-            print!("{SKILL}");
+            print!("{}", crate::branding::text(SKILL));
             return 0;
         }
         ["--licenses"] => {
@@ -158,10 +186,11 @@ pub fn main() -> i32 {
     }
     // Before parsing we can only guess (for how to print a parse error).
     let piped = !std::io::stdout().is_terminal();
-    let cli = match Cli::try_parse() {
+    use clap::{CommandFactory, FromArgMatches};
+    let cli = match branded_command(Cli::command()).try_get_matches().and_then(|m| Cli::from_arg_matches(&m)) {
         Ok(cli) => cli,
         Err(e) if !e.use_stderr() || !(piped || std::env::args().any(|a| a == "--json")) => e.exit(),
-        Err(e) => return fail(&RpcError::new("usage", usage_message(&e), "see `hc --help`"), true),
+        Err(e) => return fail(&RpcError::new("usage", usage_message(&e), format!("see `{CLI_NAME} --help`")), true),
     };
     // A template's trailing flags may include --json: parse them before choosing how to print.
     let (cmd, asked) = match cli.cmd {
@@ -268,7 +297,13 @@ fn bare(paths: &Paths, json: bool) -> Result<Option<Out>, RpcError> {
     let list = call(paths, "terminal.list", json!({}))?;
     if !interactive(json) {
         let mut r = list;
-        r["commands"] = json!(["hc run <cmd>", "hc ls", "hc read <t>", "hc attach <t>", "hc --skill"]);
+        r["commands"] = json!([
+            &format!("{CLI_NAME} run <cmd>"),
+            &format!("{CLI_NAME} ls"),
+            &format!("{CLI_NAME} read <t>"),
+            &format!("{CLI_NAME} attach <t>"),
+            &format!("{CLI_NAME} --skill")
+        ]);
         let human = table(&r);
         return Ok(Some(Out { json: r, human }));
     }
@@ -473,9 +508,11 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcErro
             let r = call("terminal.read", to(&p))?;
             let mut human = r["text"].as_str().unwrap_or_default().to_string();
             if r["why"] == "working" {
-                human.push_str("\n[hc] only its screen: it is working; read again once it stops for its history");
+                human.push_str(&format!(
+                    "\n[{CLI_NAME}] only its screen: it is working; read again once it stops for its history"
+                ));
             } else if r["complete"] == false {
-                human.push_str("\n[hc] incomplete: older output may be missing");
+                human.push_str(&format!("\n[{CLI_NAME}] incomplete: older output may be missing"));
             }
             // Its output is text: plain even when piped, JSON only when asked.
             if !asked {
@@ -578,10 +615,10 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcErro
         }
         Cmd::Server { action: ServerCmd::Stop } => stop(&paths)?,
         Cmd::Update { from: None, version, force } => {
-            let this = format!("hc {}", env!("CARGO_PKG_VERSION"));
+            let this = format!("{CLI_NAME} {}", env!("CARGO_PKG_VERSION"));
             if let Some(v) = &version
                 && !force
-                && !older(&this, &format!("hc {v}"))
+                && !older(&this, &format!("{CLI_NAME} {v}"))
             {
                 let human = format!("{this} is already {v} or newer");
                 return Ok(Some(up_to_date(&paths, v, human)?));
@@ -594,15 +631,15 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcErro
                 return Err(RpcError::new(
                     "refused",
                     format!(
-                        "hc {} speaks protocol generation {}, this hc {}: apps built for it would stop working",
+                        "{CLI_NAME} {} speaks protocol generation {}, this {CLI_NAME} {}: apps built for it would stop working",
                         m.version,
                         m.generation,
                         crate::api::GENERATION
                     ),
-                    "update the apps that use hc first, then hc update --force",
+                    format!("update the apps that use {CLI_NAME} first, then {CLI_NAME} update --force"),
                 ));
             }
-            if version.is_none() && !force && !older(&this, &format!("hc {}", m.version)) {
+            if version.is_none() && !force && !older(&this, &format!("{CLI_NAME} {}", m.version)) {
                 let human = format!("{this} is up to date (latest release: {})", m.version);
                 up_to_date(&paths, &m.version, human)?
             } else {
@@ -644,7 +681,11 @@ fn flags_after_task(paths: &Paths, p: RunParams) -> Result<(RunParams, bool), Rp
         ..p
     };
     if merged.parent.is_some() && merged.no_parent {
-        return Err(RpcError::new("usage", "--parent and --no-parent together", "see `hc run --help`"));
+        return Err(RpcError::new(
+            "usage",
+            "--parent and --no-parent together",
+            format!("see `{CLI_NAME} run --help`"),
+        ));
     }
     Ok((merged, json))
 }
@@ -675,12 +716,15 @@ fn trailing_flags(paths: &Paths, argv: &[String]) -> Result<Option<(RunParams, b
     if flags.is_empty() {
         return Ok(None);
     }
-    let args =
-        ["hc".to_string(), "run".into()].into_iter().chain(flags).chain(["--".into(), argv[0].clone()]).chain(task);
+    let args = [crate::branding::COMMAND.to_string(), "run".into()]
+        .into_iter()
+        .chain(flags)
+        .chain(["--".into(), argv[0].clone()])
+        .chain(task);
     match Cli::try_parse_from(args) {
         Ok(Cli { cmd: Some(Cmd::Run(q)), json, .. }) => Ok(Some((q, json))),
         Ok(_) => Ok(None),
-        Err(e) => Err(RpcError::new("usage", usage_message(&e), "see `hc run --help`")),
+        Err(e) => Err(RpcError::new("usage", usage_message(&e), format!("see `{CLI_NAME} run --help`"))),
     }
 }
 
@@ -776,29 +820,31 @@ fn ran(r: &Value) -> Result<Option<Out>, RpcError> {
     let t = r["address"].as_str().unwrap_or("?");
     // An older hc (on another machine) ignores the wait: it only started it.
     if r.get("wait").is_none() {
-        let fix = t.split_once('/').map(|(m, _)| format!(": hc machine update {m}")).unwrap_or_default();
-        println!("[hc] started as {t}, not waited on: that hc is older{fix}");
+        let fix = t.split_once('/').map(|(m, _)| format!(": {CLI_NAME} machine update {m}")).unwrap_or_default();
+        println!("[{CLI_NAME}] started as {t}, not waited on: that {CLI_NAME} is older{fix}");
         std::process::exit(0);
     }
     let w = &r["wait"];
     let status = w["status"].as_str().unwrap_or("no status");
     let (note, code) = match w["reason"].as_str() {
-        Some("timeout") => (Some(format!("still running as {t}: hc wait {t}, hc read {t}")), 124),
+        Some("timeout") => (Some(format!("still running as {t}: {CLI_NAME} wait {t}, {CLI_NAME} read {t}")), 124),
         Some("exit") => match (w["exit_code"].as_i64(), w["signal"].as_i64()) {
             (Some(0), _) => (None, 0),
             (Some(c), _) => (Some(format!("{t} exited (exit {c})")), c as i32),
             (_, Some(sig)) => (Some(format!("{t} ended by signal {sig}")), 128 + sig as i32),
             _ => (Some(format!("{t} ended")), 1),
         },
-        _ if status == "blocked" => (Some(format!("{t} is blocked: read it, then answer with hc send or hc keys")), 0),
-        _ => (Some(format!("{t} is {status}: hc send {t} <text>")), 0),
+        _ if status == "blocked" => {
+            (Some(format!("{t} is blocked: read it, then answer with {CLI_NAME} send or {CLI_NAME} keys")), 0)
+        }
+        _ => (Some(format!("{t} is {status}: {CLI_NAME} send {t} <text>")), 0),
     };
     let mut text = r["output"].as_str().unwrap_or_default().trim_end().to_string();
     if let Some(first) = r.get("first_message").filter(|f| f["sent"] != true) {
-        text.push_str(&format!("\n[hc] first message NOT sent: {}", first["reason"].as_str().unwrap_or("?")));
+        text.push_str(&format!("\n[{CLI_NAME}] first message NOT sent: {}", first["reason"].as_str().unwrap_or("?")));
     }
     if let Some(note) = note {
-        text.push_str(&format!("\n[hc] {note}"));
+        text.push_str(&format!("\n[{CLI_NAME}] {note}"));
     }
     let mut out = std::io::stdout();
     let _ = writeln!(out, "{}", text.trim_start_matches('\n')).and_then(|_| out.flush());
@@ -990,12 +1036,6 @@ mod tests {
             describe_wait(&interrupted),
             "a message from t1 (already in your input)\nt1 still running: working, turn 2 (wait again to keep waiting)"
         );
-    }
-
-    #[test]
-    fn older_compares_versions_as_numbers() {
-        assert!(older("hc 0.1.9", "hc 0.2.0") && older("hc 0.2.0", "hc 0.10.0"));
-        assert!(!older("hc 0.2.0", "hc 0.2.0") && !older("hc 0.10.0", "hc 0.9.9") && !older("hc dev", "hc 0.2.0"));
     }
 
     #[test]

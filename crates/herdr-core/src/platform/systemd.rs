@@ -3,6 +3,7 @@
 //! login ending can't take them along, and an ssh login's environment never
 //! becomes theirs.
 
+use crate::branding::COMMAND as CLI_NAME;
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::io;
@@ -185,9 +186,11 @@ fn linger() {
         .status()
         .is_ok_and(|s| s.success());
     if enabled {
-        eprintln!("hc: turned on linger for {user}, so the core outlives your logins");
+        eprintln!("{CLI_NAME}: turned on linger for {user}, so the core outlives your logins");
     } else {
-        eprintln!("hc: the core stops when your last login ends; `sudo loginctl enable-linger {user}` keeps it");
+        eprintln!(
+            "{CLI_NAME}: the core stops when your last login ends; `sudo loginctl enable-linger {user}` keeps it"
+        );
     }
 }
 

@@ -3,6 +3,7 @@
 //! a core that dialed in (a peer) may have parents of terminals here: they
 //! hear from them over the same line, or later from an outbox kept here.
 
+use crate::branding::COMMAND as CLI_NAME;
 use crate::machines::Machine;
 use crate::rpc::RpcError;
 use crate::runtime::{Core, State, now_ms};
@@ -127,7 +128,7 @@ impl Line {
             return Err(RpcError::new(
                 "unavailable",
                 format!("{machine} didn't answer within {} s", deadline.as_secs()),
-                "it may be busy or stuck; hc machine ls shows its line",
+                format!("it may be busy or stuck; {CLI_NAME} machine ls shows its line"),
             ));
         };
         let reply = reply.map_err(|_| {
@@ -923,20 +924,20 @@ async fn line(core: &Core, m: &Machine) -> Result<Arc<Line>, RpcError> {
             "unavailable",
             format!("{} needs a login typed by a person", m.name),
             if cfg!(windows) {
-                format!("set up its SSH keys, then: hc machine login {}", m.name)
+                format!("set up its SSH keys, then: {CLI_NAME} machine login {}", m.name)
             } else {
-                format!("in a terminal: hc machine login {}", m.name)
+                format!("in a terminal: {CLI_NAME} machine login {}", m.name)
             },
         )),
         Some(LineState::NeedsUpdate { .. }) => Err(RpcError::new(
             "needs_update",
-            format!("{}'s hc speaks another protocol generation", m.name),
-            format!("hc machine update {}", m.name),
+            format!("{}'s {CLI_NAME} speaks another protocol generation", m.name),
+            format!("{CLI_NAME} machine update {}", m.name),
         )),
         Some(LineState::Unreachable { why, .. }) => Err(RpcError::new(
             "unavailable",
             format!("{} is unreachable: {why}", m.name),
-            "hc machine ls shows when it comes back",
+            format!("{CLI_NAME} machine ls shows when it comes back"),
         )),
         _ => Err(RpcError::new("unavailable", format!("still connecting to {}", m.name), "try again in a moment")),
     }
@@ -1046,15 +1047,15 @@ async fn forward_once(core: &Core, m: &Machine, method: &str, mut params: Value)
     if method == "terminal.run" && own_shell && !line.features.iter().any(|f| f == "shell") {
         return Err(RpcError::new(
             "needs_update",
-            format!("{}'s hc is older and can't pick its own shell", m.name),
-            format!("hc machine update {}", m.name),
+            format!("{}'s {CLI_NAME} is older and can't pick its own shell", m.name),
+            format!("{CLI_NAME} machine update {}", m.name),
         ));
     }
     let reply = line.call(&m.name, method, params, deadline).await.map_err(|e| match e.kind.as_str() {
         "unknown_method" => RpcError::new(
             "needs_update",
-            format!("{}'s hc is older and has no {method}", m.name),
-            format!("hc machine update {}", m.name),
+            format!("{}'s {CLI_NAME} is older and has no {method}", m.name),
+            format!("{CLI_NAME} machine update {}", m.name),
         ),
         _ => e,
     })?;

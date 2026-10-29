@@ -1,6 +1,7 @@
 //! `hc attach`: puts this terminal on a core terminal. Raw bytes both ways;
 //! the only key we look at is the detach chord.
 
+use crate::branding::COMMAND as CLI_NAME;
 use crate::client;
 use crate::config::DetachKey;
 use crate::paths::Paths;
@@ -332,7 +333,7 @@ pub fn run(paths: &Paths, terminal: &str, observe: bool, history: usize) -> Resu
     Ok(match ending {
         Some(end) => format!("[{address} finished: {}]", end["reason"].as_str().unwrap_or("ended")),
         None if detached => format!("[detached from {address}]"),
-        None => format!("[lost the core; it keeps {address} running: hc attach {address}]"),
+        None => format!("[lost the core; it keeps {address} running: {CLI_NAME} attach {address}]"),
     })
 }
 
