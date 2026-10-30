@@ -1,6 +1,6 @@
 # Nearshell 构建与 CLI 契约
 
-状态：A1、A2 已实现；A3–A5 尚未实现，当前 managed 构建不能作为完整受管发行版交付。日期：2026-10-30。
+状态：A1–A5 已实现；发行前须通过锁定源码构建与组 A 契约矩阵。日期：2026-10-30。
 
 目标：保持默认构建的上游命令与寻址行为，提供独立的 Nearshell 分发身份和私有路径。连接生命周期修复及附加的 build 字段适用于两种构建。
 
@@ -13,7 +13,7 @@ Nearshell 使用 `cargo build --locked --features managed --bin nearshell-hc`（
 | 变量 | 契约 |
 |---|---|
 | `NEARSHELL_CORE_COMMIT` | 完整的 40 位 Git commit；发行构建由构建脚本保证源码与之匹配 |
-| `NEARSHELL_CORE_PATCHSET` | 补丁契约版本；A2 不能声称具备 A3–A5 的能力 |
+| `NEARSHELL_CORE_PATCHSET` | 与锁定源码实际具备能力一致的补丁契约版本 |
 | `NEARSHELL_CORE_RELEASE_SEQ` | 分配给该发行物的正整数，单调递增；不从 semver 推断 |
 | `NEARSHELL_CORE_CONFIG` | `dev` 或 `release` |
 | `NEARSHELL_CORE_BUNDLE_ID` | 对应 App 的 bundle ID；Dev 必须与 Release 分开 |
@@ -21,6 +21,8 @@ Nearshell 使用 `cargo build --locked --features managed --bin nearshell-hc`（
 `build-info --json` 直接输出 `{commit, patchset, releaseSeq, config}`；不解析路径、不连 core、不自启，运行时同名环境变量不能改变它。`hello.build` 与 `server.status.build` 描述正在运行的二进制。`config` 包含配置种类和 bundle ID；测试构建再带 `:scratch-test`。未提供发行参数的默认开发构建是 `unversioned` / `a1-dev` / 0 / `upstream`，不得当作发行身份。身份不是签名或内容哈希，后续 App 仍须验证发行物。
 
 Cargo 启用 feature 会影响整个 crate；分发时只取 `cargo build --bin nearshell-hc` 指定的产物，不分发同次构建的 `herdr-core`。
+
+发行构建使用 [managed universal 构建脚本](../scripts/managed-release.md)，分别指定 Release/Dev 的 bundle ID 与 config。
 
 ## 地址
 
@@ -96,7 +98,7 @@ AppSupport root, not its socket cleanup directory):
    CLI lifecycle commands additionally acquire exclusive `lifecycle.lock` to
    serialize start/stop/restart/update. Direct App lifecycle RPCs must similarly
    hold a shared management lease and exclusive lifecycle lock through the reply
-   and service EOF. Release both before invoking a CLI lifecycle command, which
+   and service EOF plus release of the existing core.lock inode. Release both before invoking a CLI lifecycle command, which
    acquires them itself. A new owner begins work only after verifier publication.
 3. Generate 32 random bytes, encode as 64 hex characters, keep this token in
    owner memory only. Atomically write its lowercase SHA-256 hex digest into
@@ -115,6 +117,33 @@ management returns `managed_by_owner`, with fixed text. Plain and framed RPC use
 identical checks before lifecycle side effects. Each CLI operation checks the
 live server as well as local config. `server.status` remains public.
 
+Managed CLI stop/restart prepares its read timeout before sending the request:
+on macOS, setting SO_RCVTIMEO after the peer closes can return EINVAL even for a
+clean EOF. A successful response acknowledges the operation; it does not alone
+prove service departure. The CLI then observes EOF and acquires the existing
+`state/herdr-core/default/core.lock` inode, opened before the request. It releases
+that lease before owner start. With no reachable listener, `stopped:false` is
+returned only if core.lock is absent or available; an unreachable service still
+holding the lock is unconfirmed, not evidence of completed departure.
+The request/response read and the completion wait
+are each bounded by 30 seconds; waiting for completion never resends the request.
+
+- `managed_by_owner` still means the owner capability/lease check rejected an
+  operation; no IO failure in shutdown completion is reclassified as denial.
+- `managed_shutdown_unconfirmed` means preparation failed or no successful
+  acknowledgement was confirmed. The effect can be unknown; inspect state first.
+- `managed_shutdown_incomplete` means acknowledgement was received but the pinned
+  service lock was not released within the completion deadline. Keep the managed
+  files; a disconnected client socket is not a cleanup barrier.
+- `managed_shutdown_transport` means acknowledgement and service-lock release
+  were both observed, but the transport ended abnormally (or sent extra bytes).
+  This is a completed service departure with a transport error, not a permission
+  rejection; do not resend shutdown. A restart/update reports this state without
+  automatically starting another core, leaving the next step to owner recovery.
+
+These completion codes are CLI observations; direct RPC still acknowledges the
+server operation and its caller must enforce the departure barrier itself.
+
 Owner start/restart strips all inherited HC_* and XDG_* plus terminal identity,
 then sets only the private XDG_CONFIG_HOME/XDG_STATE_HOME (HC_RUNTIME is added
 internally for the daemon). Other launcher environment values form the program
@@ -123,13 +152,19 @@ explicit authorization and this clean environment. The owner token is never in
 program/holder environments or restart_env. `server::serve()` without a token
 cannot start a managed core.
 
+**替换受管副本后必须 owner restart 才能新建终端。** 受管路径统一为
+`<root>/bin/nearshell-hc`。即使 R 与 B 的 P8 身份和 hash 完全相同，只要 D 不同或损坏，
+也必须先原子复制可信 B 为 D，再由 owner 计划内 restart；待确认新 core 身份后才能
+继续新建终端。已有 PTY 由 holder 保留，不修改 holder 的构建身份校验。
+不要把“旧终端仍存活”视为新 core/holder 已可接收新任务。
+
 Managed update only replaces `<root>/bin/nearshell-hc`. It rejects other config
 identities, lower releaseSeq, or unequal identities at equal releaseSeq, even
 with --force. It reads candidate, installed and running identities; checks the
 staged candidate and installed identity again; then revalidates local and live
 server authorization immediately before the atomic rename. Refused authorization
 or incompatible build leaves installed bytes unchanged. Already-replaced copies
-can be restarted explicitly; PTYs remain in holders. A failure after rename is
+must be restarted explicitly before creating new terminals; PTYs remain in holders. A failure after rename is
 reported (it is not rolled back); the App's three-party recovery decision in the
 design handles that state. Only --from is supported; upstream distribution paths
 remain disabled. Build identity is not a signature/hash check: the App must

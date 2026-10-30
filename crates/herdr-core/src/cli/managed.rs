@@ -2,6 +2,7 @@
 use super::*;
 use crate::owner;
 use std::path::Path;
+mod shutdown;
 
 fn params(token: &str) -> Value {
     json!({"owner_token":token})
@@ -32,12 +33,11 @@ pub(super) fn command(paths: &Paths, cmd: &Cmd, token: Option<&str>) -> Result<O
         }
         Cmd::Server { action: ServerCmd::Stop } => {
             let result = match client::connect_existing(paths) {
-                Some(stream) => {
-                    let result = client::call(&stream, "server.stop", params(token))?;
-                    wait_stopped(&stream)?;
-                    result
+                Some(stream) => shutdown::request(paths, &stream, "server.stop", params(token))?,
+                None => {
+                    shutdown::require_absent(paths)?;
+                    json!({"stopped":false})
                 }
-                None => json!({"stopped":false}),
             };
             Out { human: "managed core stopped".into(), json: result }
         }
@@ -54,16 +54,9 @@ pub(super) fn command(paths: &Paths, cmd: &Cmd, token: Option<&str>) -> Result<O
     Ok(Some(result))
 }
 
-fn wait_stopped(stream: &crate::platform::Stream) -> Result<(), RpcError> {
-    stream.set_read_timeout(Some(std::time::Duration::from_secs(30))).map_err(|_| owner::denied())?;
-    (&*stream).read_to_end(&mut Vec::new()).map_err(|_| owner::denied())?;
-    Ok(())
-}
-
 fn restart(paths: &Paths, token: &str) -> Result<bool, RpcError> {
     if let Some(stream) = client::connect_existing(paths) {
-        client::call(&stream, "server.restart", params(token))?;
-        wait_stopped(&stream)?;
+        shutdown::request(paths, &stream, "server.restart", params(token))?;
         Ok(true)
     } else {
         Ok(false)
