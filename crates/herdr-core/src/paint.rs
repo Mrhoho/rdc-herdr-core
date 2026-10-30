@@ -129,6 +129,8 @@ pub struct Job {
     replies: Option<mpsc::Receiver<Reply>>,
     outstanding: bool,
     stack: Option<Reservation>,
+    #[cfg(test)]
+    before_grant: Option<Box<dyn FnOnce() + Send>>,
 }
 impl Job {
     pub fn new(source: Source, conn: Weak<Conn>) -> io::Result<Self> {
@@ -142,6 +144,8 @@ impl Job {
             replies: None,
             outstanding: false,
             stack: Some(stack),
+            #[cfg(test)]
+            before_grant: None,
         })
     }
     pub fn cancel(&self) -> u64 {
@@ -150,17 +154,8 @@ impl Job {
         p.generated.saturating_sub(p.delivered)
     }
     pub fn poll(&mut self, credit: usize) -> Poll {
-        if let Some(replies) = &self.replies {
-            match replies.try_recv() {
-                Ok(Reply::Data(data)) => {
-                    self.progress.lock().unwrap_or_else(|e| e.into_inner()).delivered += data.bytes.len() as u64;
-                    self.outstanding = false;
-                    return Poll::Data(data);
-                }
-                Ok(Reply::End(true)) => return Poll::End,
-                Ok(Reply::End(false)) | Err(mpsc::TryRecvError::Disconnected) => return Poll::Failed,
-                Err(mpsc::TryRecvError::Empty) => {}
-            }
+        if let Some(reply) = self.take_reply() {
+            return reply;
         }
         if credit == 0 || self.outstanding {
             return Poll::Pending;
@@ -218,11 +213,83 @@ impl Job {
                 return Poll::Failed;
             }
         }
-        if self.permits.as_ref().expect("started job").try_send(Permit { n, reservation }).is_err() {
-            return Poll::Failed;
+        #[cfg(test)]
+        if let Some(before_grant) = self.before_grant.take() {
+            before_grant();
+        }
+        match self.permits.as_ref().expect("started job").try_send(Permit { n, reservation }) {
+            Ok(()) => {}
+            Err(mpsc::TrySendError::Disconnected(_)) => {
+                // The worker sends End before dropping Sink (and its credit receiver).
+                // It may have finished since take_reply observed Empty. A closed credit
+                // receiver is not evidence that painting failed: consume the final reply.
+                return self.take_reply().unwrap_or(Poll::Failed);
+            }
+            Err(mpsc::TrySendError::Full(_)) => return Poll::Failed,
         }
         self.outstanding = true;
         Poll::Pending
+    }
+
+    fn take_reply(&mut self) -> Option<Poll> {
+        match self.replies.as_ref()?.try_recv() {
+            Ok(Reply::Data(data)) => {
+                self.progress.lock().unwrap_or_else(|e| e.into_inner()).delivered += data.bytes.len() as u64;
+                self.outstanding = false;
+                Some(Poll::Data(data))
+            }
+            Ok(Reply::End(true)) => Some(Poll::End),
+            Ok(Reply::End(false)) | Err(mpsc::TryRecvError::Disconnected) => Some(Poll::Failed),
+            Err(mpsc::TryRecvError::Empty) => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod completion_race_tests {
+    use super::*;
+
+    fn ending_between_check_and_grant(end: Option<bool>) -> Poll {
+        let budget = Budget::new(1024 * 1024);
+        let (permit_tx, permit_rx) = mpsc::sync_channel(1);
+        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+        let mut job = Job {
+            progress: Default::default(),
+            source: None,
+            budget: budget.clone(),
+            conn: Weak::new(),
+            permits: Some(permit_tx),
+            replies: Some(reply_rx),
+            outstanding: false,
+            stack: None,
+            // Exactly the production worker's final send followed by dropping Sink::rx.
+            // The initial try_recv has already observed Empty; there are no timing assumptions.
+            before_grant: Some(Box::new(move || {
+                if let Some(success) = end {
+                    reply_tx.send(Reply::End(success)).unwrap();
+                }
+                drop(permit_rx);
+            })),
+        };
+        let outcome = job.poll(CHUNK);
+        drop(job);
+        assert_eq!(budget.used(), 0);
+        assert_eq!(budget.denied(), 0, "this is not resource exhaustion");
+        outcome
+    }
+
+    #[test]
+    fn successful_end_between_reply_check_and_credit_grant_is_not_a_failure() {
+        assert!(
+            matches!(ending_between_check_and_grant(Some(true)), Poll::End),
+            "successful completion must win over a closed credit receiver"
+        );
+    }
+
+    #[test]
+    fn failed_or_missing_end_still_fails_closed() {
+        assert!(matches!(ending_between_check_and_grant(Some(false)), Poll::Failed));
+        assert!(matches!(ending_between_check_and_grant(None), Poll::Failed));
     }
 }
 impl Drop for Job {
