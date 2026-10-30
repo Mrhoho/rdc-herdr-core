@@ -33,6 +33,7 @@ test:
 # Format and clippy only (seconds once built). Windows is type-checked with zig stubbed.
 [unix]
 lint:
+    python3 -B -m unittest discover -s scripts -p test_managed_release.py
     cargo fmt --all -- --check
     cargo deny check
     cargo clippy --locked --all-targets -- -D warnings
@@ -117,3 +118,9 @@ release-publish version:
 [unix]
 managed-check:
     sh scripts/check-managed.sh
+
+# One locked macOS distribution; see scripts/managed-release.md for required arguments.
+[unix]
+[positional-arguments]
+managed-release *args:
+    python3 -B scripts/build-managed.py "$@"
