@@ -37,6 +37,8 @@ pub struct Display {
 
 pub struct Viewer {
     pub marks: bool,
+    // A marked paint replaces the receiver's parser, including its history.
+    history: usize,
     suppressed: u64,
     pub conn: Arc<Conn>,
     pub channel: u32,
@@ -104,6 +106,7 @@ impl Core {
         let recovering = st.screens[&id].continuation().is_none();
         st.viewers.entry(id).or_default().push(Viewer {
             marks: req.marks,
+            history: req.history,
             suppressed: 0,
             conn: conn.clone(),
             channel,
@@ -595,13 +598,13 @@ impl Core {
         replace: bool,
         loss: u64,
     ) {
-        let marks = st
-            .viewers
-            .get(&id)
-            .into_iter()
-            .flatten()
-            .find(|v| Arc::ptr_eq(&v.conn, conn) && v.channel == channel)
-            .is_some_and(|v| v.marks);
+        let viewer =
+            st.viewers.get(&id).into_iter().flatten().find(|v| Arc::ptr_eq(&v.conn, conn) && v.channel == channel);
+        let marks = viewer.is_some_and(|v| v.marks);
+        // All marked synthetic paints (resize, facts, overflow, stitch and
+        // restore) replay the same bounded history as attach. Unmarked streams
+        // retain their upstream screen-only resync behavior.
+        let history = viewer.filter(|v| v.marks).map_or(history, |v| v.history);
         // New viewers participate in size selection before their stream opens.
         if !conn.outbox().has_stream(channel) {
             return;
