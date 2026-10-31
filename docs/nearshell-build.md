@@ -218,3 +218,13 @@ this handles overrides equal to defaults without depending on snapshot binary
 layout. Canonical terminals are never probed this way. Snapshot restoration
 retains saved color defaults; explicit dark is a viewer fact and must be sent
 again after reconnect, while program colors survive handover.
+
+## Marked paint history
+
+For `terminal.attach` with `marks: true`, `history: N` is a subscription bound,
+not only an initial-paint option. Every later synthetic paint (resize, display
+facts, overflow, stitch or holder restoration) replays up to the same N history
+rows. Receivers replace their parser at `paint_begin`, so a screen-only resync
+would otherwise silently erase scrollback. Alternate screens retain their
+screen-only semantics. CREDIT and shared pending budgets still apply to the
+entire replay. Unmarked viewers keep upstream behavior.
