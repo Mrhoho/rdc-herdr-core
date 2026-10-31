@@ -21,10 +21,13 @@ struct Marked {
 }
 impl Marked {
     fn attach(s: &Session, t: &str, history: usize) -> Self {
+        Self::attach_mode(s, t, history, true)
+    }
+    fn attach_mode(s: &Session, t: &str, history: usize, observe: bool) -> Self {
         let mut conn = Framed::open(s);
         let result = conn.call(
             "terminal.attach",
-            json!({"terminal":t,"cols":100,"rows":24,"observe":true,"marks":true,"history":history}),
+            json!({"terminal":t,"cols":100,"rows":24,"observe":observe,"marks":true,"history":history}),
         );
         let ch = result["result"]["channel"].as_u64().unwrap_or_else(|| panic!("{result}")) as u32;
         Self {
@@ -338,4 +341,23 @@ fn exit_during_coalesced_recovery_delivers_final_baseline_before_close() {
     v.until(|v| v.closed.is_some());
     assert!(v.screen.plain_text().contains("FINAL_SCREEN"));
     assert!(v.ends > 0);
+}
+
+#[test]
+fn marked_resync_replays_subscribed_history_after_resize_and_facts() {
+    let s = session();
+    let t = s.json(&["run", "--bg", "/bin/sh", "-c", "seq 1 500; printf HISTORY_READY; exec /bin/sh"])["address"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    wait_until("shell ready", || text(&s, &t).contains("HISTORY_READY"));
+    let mut v = Marked::attach_mode(&s, &t, 600, false);
+    v.until(|v| v.ends == 1);
+    assert!(v.screen.plain_text().contains("100\n"));
+    v.conn.send(v.ch, wire::RESIZE, &[72, 0, 18, 0]);
+    v.until(|v| v.ends == 2);
+    assert!(v.screen.plain_text().contains("100\n"), "resize lost history");
+    v.conn.send(v.ch, wire::FACTS, br##"{"bg":"#123456"}"##);
+    v.until(|v| v.ends == 3);
+    assert!(v.screen.plain_text().contains("100\n"), "theme resync lost history");
 }
