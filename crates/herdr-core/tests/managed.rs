@@ -3,7 +3,9 @@ use serde_json::Value;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
-struct Scratch(PathBuf, String, Option<std::fs::File>);
+#[path = "common/guardian.rs"]
+mod guardian;
+struct Scratch(PathBuf, String, Option<std::fs::File>, guardian::Guardian);
 impl Scratch {
     fn new() -> Self {
         let root = PathBuf::from(format!("/var/tmp/nc-{}", herdr_core::platform::random_hex()));
@@ -11,13 +13,17 @@ impl Scratch {
         let lock =
             std::fs::File::options().create(true).truncate(false).write(true).open(root.join("owner.lock")).unwrap();
         assert!(herdr_core::platform::try_lock(&lock));
-        Self(root, herdr_core::platform::random_hex() + &herdr_core::platform::random_hex(), Some(lock))
+        let token = herdr_core::platform::random_hex() + &herdr_core::platform::random_hex();
+        let guardian =
+            guardian::Guardian::new(&root, std::path::Path::new(env!("CARGO_BIN_EXE_nearshell-hc")), Some(&token));
+        Self(root, token, Some(lock), guardian)
     }
     fn cmd(&self) -> Command {
         let mut c = Command::new(env!("CARGO_BIN_EXE_nearshell-hc"));
         c.env_clear()
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("NEARSHELL_HC_TEST_ROOT", &self.0)
+            .env("NEARSHELL_TEST_SESSION_ID", &self.3.nonce)
             .env("HOME", self.0.join("wrong-home"))
             .env("XDG_CONFIG_HOME", self.0.join("wrong-xdg"))
             .env("XDG_STATE_HOME", self.0.join("wrong-state"))
@@ -30,6 +36,7 @@ impl Scratch {
             format!("owner_token_sha256 = '{}'\n{text}", herdr_core::owner::verifier(&self.1)),
         )
         .unwrap();
+        guardian::Guardian::register(&self.0, std::path::Path::new(env!("CARGO_BIN_EXE_nearshell-hc")), Some(&self.1));
     }
     fn owner_cmd(&self) -> Command {
         let mut cmd = self.cmd();
@@ -45,10 +52,12 @@ impl Scratch {
 }
 impl Drop for Scratch {
     fn drop(&mut self) {
-        if self.socket().exists() {
-            let _ = self.owner_cmd().args(["server", "stop"]).output();
+        self.2.take(); // Guardian acquires the owner lease before authorized stop.
+        let clean = self.3.finish();
+        if clean {
+            let _ = std::fs::remove_dir_all(&self.0);
         }
-        let _ = std::fs::remove_dir_all(&self.0);
+        assert!(clean || std::thread::panicking(), "test_guardian_cleanup_unconfirmed");
     }
 }
 fn value(out: Output) -> Value {
@@ -512,6 +521,7 @@ fn user_hc_in_a_second_scratch_root_stays_independent_inside_managed_terminals()
         cmd.env_clear()
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", &user.0)
+            .env("NEARSHELL_TEST_SESSION_ID", &user.3.nonce)
             .env("XDG_CONFIG_HOME", user.0.join("config"))
             .env("XDG_STATE_HOME", user.0.join("state"))
             .env("XDG_DATA_HOME", user.0.join("data"))
@@ -520,6 +530,7 @@ fn user_hc_in_a_second_scratch_root_stays_independent_inside_managed_terminals()
         cmd
     };
     user.config(&format!("socket = '{}'", user.socket().display()));
+    guardian::Guardian::register(&user.0, std::path::Path::new(&user_bin), None);
     std::fs::create_dir_all(user.0.join("bin")).unwrap();
     std::os::unix::fs::symlink(&user_bin, user.0.join("bin/hc")).unwrap();
     s.config(&format!(

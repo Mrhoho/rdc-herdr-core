@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 pub mod framed;
+pub mod guardian;
 
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Write};
@@ -21,6 +22,7 @@ pub struct Session {
     pub root: PathBuf,
     pub env: Vec<(String, String)>,
     pub bin: PathBuf,
+    pub guardian: guardian::Guardian,
 }
 
 impl Session {
@@ -34,16 +36,7 @@ impl Session {
                 let limit = std::env::var("HC_TEST_WATCHDOG_S").ok().and_then(|s| s.parse().ok()).unwrap_or(30);
                 std::thread::sleep(Duration::from_secs(limit));
                 eprintln!("test binary still running after {limit} s: cleaning up and aborting");
-                // Abort skips every Drop, so end this binary's sessions here first.
-                let ours = format!("/var/tmp/hc-test-{}-", std::process::id());
-                for pid in procs_with(&ours) {
-                    unsafe { libc::kill(pid, libc::SIGKILL) };
-                }
-                for dir in std::fs::read_dir("/var/tmp").into_iter().flatten().flatten() {
-                    if dir.path().display().to_string().starts_with(&ours) {
-                        let _ = std::fs::remove_dir_all(dir.path());
-                    }
-                }
+                // The detached guardian owns cleanup, even if this binary is SIGKILLed.
                 std::process::abort();
             });
         });
@@ -54,7 +47,8 @@ impl Session {
             std::fs::create_dir_all(root.join(dir)).unwrap();
         }
         // Sends don't wait for fake agents to settle unless a test asks.
-        Session { root, env: vec![("HC_SETTLE_MS".into(), "0".into())], bin: BIN.into() }
+        let guardian = guardian::Guardian::new(&root, std::path::Path::new(BIN), None);
+        Session { root, env: vec![("HC_SETTLE_MS".into(), "0".into())], bin: BIN.into(), guardian }
     }
 
     pub fn cmd(&self) -> Command {
@@ -68,6 +62,7 @@ impl Session {
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("HOME", &self.root)
             .env("HC_SESSION", "test")
+            .env("NEARSHELL_TEST_SESSION_ID", &self.guardian.nonce)
             .env("XDG_RUNTIME_DIR", self.root.join("run"))
             .env("XDG_STATE_HOME", self.root.join("state"))
             .env("XDG_CONFIG_HOME", self.root.join("config"))
@@ -142,35 +137,12 @@ impl Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
-        // Bring the core up (it adopts the holder's terminals), then stop everything.
-        // Never panic here: a panic during cleanup aborts every other test's cleanup.
-        let _ = self.try_hc(&["server", "status"]);
-        let _ = self.try_hc(&["server", "stop"]);
-        // Anything still running from this session is a bug; never leave it behind.
-        let mut leaks = Vec::new();
-        let ours = format!("XDG_STATE_HOME={}\0", self.root.join("state").display());
-        // A process in the act of exiting is not a leak: give stragglers a moment.
-        let start = Instant::now();
-        while !procs_with(&ours).is_empty() && start.elapsed() < Duration::from_secs(2) {
-            std::thread::sleep(Duration::from_millis(50));
+        // Do not remove identity/config before stop and process departure.
+        let clean = self.guardian.finish();
+        if clean {
+            let _ = std::fs::remove_dir_all(&self.root);
         }
-        for pid in procs_with(&ours) {
-            let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
-            let cmdline = String::from_utf8_lossy(&cmdline).replace('\0', " ");
-            let test = std::thread::current().name().unwrap_or("?").to_string();
-            let note = format!("LEAK in {test}: pid {pid} ({}) still running after server stop\n", cmdline.trim());
-            eprint!("{note}");
-            let log = std::fs::OpenOptions::new().create(true).append(true).open("/var/tmp/hc-test-leaks.log");
-            let _ = log.and_then(|mut f| f.write_all(note.as_bytes()));
-            unsafe { libc::kill(pid, libc::SIGKILL) };
-            leaks.push(note);
-        }
-        let _ = std::fs::remove_dir_all(&self.root);
-        // Cleaned up first; then the test fails (unless it is failing already:
-        // a second panic would abort every other test's cleanup).
-        if !leaks.is_empty() && !std::thread::panicking() {
-            panic!("processes outlived server stop:\n{}", leaks.concat());
-        }
+        assert!(clean || std::thread::panicking(), "test_guardian_cleanup_unconfirmed");
     }
 }
 
@@ -201,27 +173,6 @@ impl Conn {
     }
 }
 
-/// Processes (other than us) whose environment mentions `needle`. Linux
-/// only: macOS shows no other process's environment (`ps -E` prints none,
-/// checked on macOS 27), so there the leak check finds nothing; the ghost
-/// tests are what cover leftovers on macOS.
-fn procs_with(needle: &str) -> Vec<i32> {
-    if cfg!(target_os = "macos") {
-        return Vec::new();
-    }
-    let me = std::process::id() as i32;
-    std::fs::read_dir("/proc")
-        .expect("the leak check needs /proc")
-        .flatten()
-        .filter_map(|e| {
-            let pid: i32 = e.file_name().to_string_lossy().parse().ok()?;
-            let env = std::fs::read(e.path().join("environ")).ok()?;
-            let hit = env.windows(needle.len()).any(|w| w == needle.as_bytes());
-            (hit && pid != me).then_some(pid)
-        })
-        .collect()
-}
-
 /// The env that points `local`'s core at a fake `ssh`: a target containing a host's name
 /// runs the remote command as that session's machine would (its own HOME and
 /// XDG dirs, `herdr-core` on PATH, nothing else from here); `nohc` is a
@@ -234,10 +185,11 @@ pub fn fake_ssh(local: &Session, hosts: &[(&str, &Session)]) -> (String, String)
     let mut cases = String::new();
     for (host, s) in hosts {
         let r = s.root.display();
+        let nonce = &s.guardian.nonce;
         // `<root>/fakebin` first: a test can give a machine its own `uname`.
         let bin_dir = format!("{r}/fakebin:{}", s.bin.parent().unwrap().display());
         cases.push_str(&format!(
-            "  *{host}*) exec env -i HOME={r} PATH={bin_dir}:/usr/bin:/bin HC_SESSION=test HC_SETTLE_MS=0 \
+            "  *{host}*) exec env -i HOME={r} PATH={bin_dir}:/usr/bin:/bin HC_SESSION=test HC_SETTLE_MS=0 NEARSHELL_TEST_SESSION_ID={nonce} \
              XDG_RUNTIME_DIR={r}/run XDG_STATE_HOME={r}/state XDG_CONFIG_HOME={r}/config sh -c \"$*\" ;;\n"
         ));
     }
