@@ -14,12 +14,11 @@ impl Scratch {
             std::fs::File::options().create(true).truncate(false).write(true).open(root.join("owner.lock")).unwrap();
         assert!(herdr_core::platform::try_lock(&lock));
         let token = herdr_core::platform::random_hex() + &herdr_core::platform::random_hex();
-        let guardian =
-            guardian::Guardian::new(&root, std::path::Path::new(env!("CARGO_BIN_EXE_nearshell-hc")), Some(&token));
+        let guardian = guardian::Guardian::new(&root, std::path::Path::new(env!("CARGO_BIN_EXE_nhc")), Some(&token));
         Self(root, token, Some(lock), guardian)
     }
     fn cmd(&self) -> Command {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_nearshell-hc"));
+        let mut c = Command::new(env!("CARGO_BIN_EXE_nhc"));
         c.env_clear()
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("NEARSHELL_HC_TEST_ROOT", &self.0)
@@ -36,7 +35,7 @@ impl Scratch {
             format!("owner_token_sha256 = '{}'\n{text}", herdr_core::owner::verifier(&self.1)),
         )
         .unwrap();
-        guardian::Guardian::register(&self.0, std::path::Path::new(env!("CARGO_BIN_EXE_nearshell-hc")), Some(&self.1));
+        guardian::Guardian::register(&self.0, std::path::Path::new(env!("CARGO_BIN_EXE_nhc")), Some(&self.1));
     }
     fn owner_cmd(&self) -> Command {
         let mut cmd = self.cmd();
@@ -100,12 +99,13 @@ fn managed_cli_uses_its_own_name_and_keeps_payloads_opaque() {
         let out = s.cmd().args(args).output().unwrap();
         assert!(out.status.success());
         let text = String::from_utf8(out.stdout).unwrap();
-        assert!(text.contains("nearshell-hc"), "{text}");
+        assert!(text.contains("nhc"), "{text}");
+        assert!(!text.contains("nearshell-hc"), "{text}");
         assert!(!text.split_whitespace().any(|w| w == "hc"), "{text}");
         assert!(!text.contains("Tests need their own `HC_SESSION`"));
     }
     let out = s.cmd().arg("--version").output().unwrap();
-    assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), "nearshell-hc 0.1.13");
+    assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), &format!("nhc {}", env!("CARGO_PKG_VERSION")));
     s.config(&format!("socket = '{}'", s.socket().display()));
     s.start();
     let payload = "hc send t1 -- hc";
@@ -204,13 +204,15 @@ HC_TERMINAL_ID = 'forged'
 HC_TERMINAL_SOCKET = 'forged'
 DONE = 'yes'
 CONFIG_MARKER = '{marker}'
+NEARSHELL_HC = '{}'
 "#,
             s.socket().display(),
             user.0.display(),
             user.0.display(),
             user.0.display(),
             user.0.display(),
-            user.0.display()
+            user.0.display(),
+            env!("CARGO_BIN_EXE_nhc")
         )
     };
     s.config(&config("first"));
@@ -228,6 +230,7 @@ CONFIG_MARKER = '{marker}'
         assert_eq!(text.lines().any(|l| l.starts_with("HC_TERMINAL_ID=")), terminal, "{text}");
         assert_eq!(text.lines().any(|l| l.starts_with("HC_TERMINAL_SOCKET=")), terminal, "{text}");
         assert!(text.contains("HC_SCOPE="));
+        assert!(text.contains(&format!("NEARSHELL_HC={}\n", env!("CARGO_BIN_EXE_nhc"))));
     };
     let text = read_eventually(&output);
     check(&text, true);
@@ -244,7 +247,7 @@ CONFIG_MARKER = '{marker}'
     let nested_file = s.0.join("nested.env");
     let nested = format!(
         "'{}' --json run --bg --keep --outlive-parent /bin/sh -c 'env > {}; exec sleep 60' > '{}'",
-        env!("CARGO_BIN_EXE_nearshell-hc"),
+        env!("CARGO_BIN_EXE_nhc"),
         nested_file.display(),
         s.0.join("nested.json").display()
     );
@@ -418,8 +421,8 @@ fn managed_update_checks_owner_before_swap_and_preserves_ptys() {
     let user = Scratch::new();
     s.config(&format!("socket = '{}'\n[programs.env]\nXDG_CONFIG_HOME = '{}'\nXDG_STATE_HOME = '{}'\nXDG_DATA_HOME = '{}'\nXDG_CACHE_HOME = '{}'\nXDG_RUNTIME_DIR = '{}'", s.socket().display(),user.0.display(),user.0.display(),user.0.display(),user.0.display(),user.0.display()));
     std::fs::create_dir_all(s.0.join("bin")).unwrap();
-    let dest = s.0.join("bin/nearshell-hc");
-    std::fs::copy(env!("CARGO_BIN_EXE_nearshell-hc"), &dest).unwrap();
+    let dest = s.0.join("bin/nhc");
+    std::fs::copy(env!("CARGO_BIN_EXE_nhc"), &dest).unwrap();
     let cmd = |owner: bool| {
         let template = s.cmd();
         let mut c = Command::new(&dest);
@@ -458,7 +461,7 @@ fn managed_update_checks_owner_before_swap_and_preserves_ptys() {
         vec!["update"],
         vec!["update", "--version", "0.1.13"],
         vec!["update", "--from", wrong.to_str().unwrap()],
-        vec!["update", "--from", env!("CARGO_BIN_EXE_nearshell-hc"), "--force"],
+        vec!["update", "--from", env!("CARGO_BIN_EXE_nhc"), "--force"],
     ] {
         error(cmd(false).args(args).output().unwrap(), "managed_by_owner");
         assert_eq!(std::fs::read(&dest).unwrap(), before);
@@ -466,7 +469,7 @@ fn managed_update_checks_owner_before_swap_and_preserves_ptys() {
     error(cmd(true).args(["update", "--from", wrong.to_str().unwrap()]).output().unwrap(), "managed_build");
     assert_eq!(std::fs::read(&dest).unwrap(), before);
     let update = cmd(true)
-        .args(["update", "--from", env!("CARGO_BIN_EXE_nearshell-hc")])
+        .args(["update", "--from", env!("CARGO_BIN_EXE_nhc")])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -497,7 +500,7 @@ fn managed_update_checks_owner_before_swap_and_preserves_ptys() {
     assert!(env.contains(&format!("HC_TERMINAL_SOCKET={}\n", s.socket().display())));
     // The installed file may already have been replaced before an owner restart.
     let replaced = s.0.join("replacement");
-    std::fs::copy(env!("CARGO_BIN_EXE_nearshell-hc"), &replaced).unwrap();
+    std::fs::copy(env!("CARGO_BIN_EXE_nhc"), &replaced).unwrap();
     std::fs::rename(replaced, &dest).unwrap();
     value(cmd(true).args(["server", "restart"]).output().unwrap());
     assert_eq!(rpc(&s, "terminal.get", json!({"terminal":running["address"]})).unwrap()["pid"], running["pid"]);
@@ -551,7 +554,7 @@ NEARSHELL_HC = '{}'
         user.0.join("cache").display(),
         user.0.join("run").display(),
         user.0.join("bin").display(),
-        env!("CARGO_BIN_EXE_nearshell-hc")
+        env!("CARGO_BIN_EXE_nhc")
     ));
     let status = s.start();
     let _cleanup = UserCore(user_cmd());

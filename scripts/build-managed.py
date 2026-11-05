@@ -164,10 +164,10 @@ def main():
             slices = []
             for arch, triple in TARGETS.items():
                 run(["cargo", "build", "--locked", "--release", "--no-default-features", "--config", 'profile.release.strip="none"', "--features", "managed",
-                     "-p", "herdr-core", "--bin", "nearshell-hc", "--target", triple, "--target-dir", target],
+                     "-p", "herdr-core", "--bin", "nhc", "--target", triple, "--target-dir", target],
                     cwd=src, env=env)
-                slices.append(target / triple / "release/nearshell-hc")
-            binary = product / "nearshell-hc"
+                slices.append(target / triple / "release/nhc")
+            binary = product / "nhc"
             run(["xcrun", "lipo", "-create", *slices, "-output", binary])
             arches = output(["xcrun", "lipo", "-archs", binary]).split()
             if set(arches) != set(TARGETS):

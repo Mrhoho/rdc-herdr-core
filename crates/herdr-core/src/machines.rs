@@ -251,7 +251,7 @@ fn pipe(
     windows: bool,
 ) -> Result<tokio::process::Command, RpcError> {
     let remote = if cfg!(feature = "managed") {
-        format!("nearshell-hc connect{}", session.map(|s| format!(" --session {s}")).unwrap_or_default())
+        format!("nhc connect{}", session.map(|s| format!(" --session {s}")).unwrap_or_default())
     } else if windows {
         let session = session.map(|s| format!(" --session {s}")).unwrap_or_default();
         format!(
