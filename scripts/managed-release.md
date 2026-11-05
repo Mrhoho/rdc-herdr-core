@@ -35,7 +35,7 @@ just managed-release --source /path/to/clean-core \
 
 先构建两个切片，`lipo -create` 后对 universal 整体签名，再执行 `codesign --verify --strict --all-architectures`。脚本执行本机架构的离线 `build-info --json` 并逐字段比对注入身份；跨架构运行需要额外在 Intel/Rosetta 下验证，manifest 的 `executedArchitectures` 不将结构检查冒充执行检查。
 
-输出目录只包含 `nearshell-hc` 和 `manifest.json`。manifest 记录签名后的完整二进制 SHA-256、实际 build-info、semver、切片、签名类型/Team ID/authority/timestamp、源码及子模块 commit、驱动脚本 SHA-256、工具链与构建选项。ad-hoc 会明确标记，不能用于证明 Developer ID 发行者。manifest 本身不是签名信任根；App 必须从受信任的 bundle 获取预期身份/hash，并在执行磁盘副本前验证签名/Team ID/hash。
+输出目录只包含 `nhc` 和 `manifest.json`。manifest 记录签名后的完整二进制 SHA-256、实际 build-info、semver、切片、签名类型/Team ID/authority/timestamp、源码及子模块 commit、驱动脚本 SHA-256、工具链与构建选项。ad-hoc 会明确标记，不能用于证明 Developer ID 发行者。manifest 本身不是签名信任根；App 必须从受信任的 bundle 获取预期身份/hash，并在执行磁盘副本前验证签名/Team ID/hash。
 
 ## 检查
 

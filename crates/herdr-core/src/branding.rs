@@ -1,11 +1,11 @@
 //! Names in authored CLI prose. Never apply this renderer to program output,
 //! user templates, terminal data, paths, or arbitrary RPC values.
 #[cfg(feature = "managed")]
-pub const COMMAND: &str = "nearshell-hc";
+pub const COMMAND: &str = "nhc";
 #[cfg(not(feature = "managed"))]
 pub const COMMAND: &str = "hc";
 #[cfg(feature = "managed")]
-pub const VERSION_PREFIX: &str = "nearshell-hc ";
+pub const VERSION_PREFIX: &str = "nhc ";
 #[cfg(not(feature = "managed"))]
 pub const VERSION_PREFIX: &str = "hc ";
 
@@ -75,6 +75,12 @@ pub fn upstream_distribution() -> Result<(), crate::rpc::RpcError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[cfg(feature = "managed")]
+    fn managed_command_is_nhc() {
+        assert_eq!(COMMAND, "nhc");
+        assert_eq!(VERSION_PREFIX, "nhc ");
+    }
     #[test]
     fn authored_prose_changes_names_without_changing_protocol_tags() {
         assert_eq!(

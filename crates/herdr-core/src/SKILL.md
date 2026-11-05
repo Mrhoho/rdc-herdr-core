@@ -348,7 +348,7 @@ paths start at your current folder. Prefer explicit paths for remote work.
 
 ## Nearshell managed distribution
 
-In a Nearshell managed build, use `nearshell-hc`; paths are compiled for the
+In a Nearshell managed build, use `nhc`; paths are compiled for the
 current App distribution and HC_SESSION/HC_SOCKET are refused. Ordinary commands
 work against the running core, but only Nearshell's owner can start, stop,
 restart or update it (`managed_by_owner` on refusal). Do not read or discover an
