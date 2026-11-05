@@ -8,7 +8,7 @@
 
 默认 `cargo build --bin herdr-core` 保持 `hc` 命令名称及 HC_SESSION、HC_SOCKET、XDG 规则。
 
-Nearshell 使用 `cargo build --locked --features managed --bin nearshell-hc`（当前只支持 macOS）。必须在构建环境指定：
+Nearshell 使用 `cargo build --locked --features managed --bin nhc`（当前只支持 macOS）。必须在构建环境指定：
 
 | 变量 | 契约 |
 |---|---|
@@ -20,7 +20,7 @@ Nearshell 使用 `cargo build --locked --features managed --bin nearshell-hc`（
 
 `build-info --json` 直接输出 `{commit, patchset, releaseSeq, config}`；不解析路径、不连 core、不自启，运行时同名环境变量不能改变它。`hello.build` 与 `server.status.build` 描述正在运行的二进制。`config` 包含配置种类和 bundle ID；测试构建再带 `:scratch-test`。未提供发行参数的默认开发构建是 `unversioned` / `a1-dev` / 0 / `upstream`，不得当作发行身份。身份不是签名或内容哈希，后续 App 仍须验证发行物。
 
-Cargo 启用 feature 会影响整个 crate；分发时只取 `cargo build --bin nearshell-hc` 指定的产物，不分发同次构建的 `herdr-core`。
+Cargo 启用 feature 会影响整个 crate；分发时只取 `cargo build --bin nhc` 指定的产物，不分发同次构建的 `herdr-core`。
 
 发行构建使用 [managed universal 构建脚本](../scripts/managed-release.md)，分别指定 Release/Dev 的 bundle ID 与 config。
 
@@ -38,7 +38,7 @@ HC_SESSION、HC_SOCKET 只要存在（包括空值）就返回 `managed_address_
 
 ## 命名与隔离
 
-managed CLI 的版本前缀、help、skill、固定提示与内置模板说明使用 `nearshell-hc`。用户模板、程序输出、协议标签与数据键保持原值。远端拨号不再回退 `hc` 或 `herdr-core`；上游下载器及向上游安装目录复制二进制的功能返回 `managed_distribution`，防止写入用户自装副本。A2 的 owner 鉴权、禁止自启及程序环境契约见下文。
+managed CLI 的版本前缀、help、skill、固定提示与内置模板说明使用 `nhc`。用户模板、程序输出、协议标签与数据键保持原值。远端拨号不再回退 `hc` 或 `herdr-core`；上游下载器及向上游安装目录复制二进制的功能返回 `managed_distribution`，防止写入用户自装副本。A2 的 owner 鉴权、禁止自启及程序环境契约见下文。
 
 ## 连接与验证
 
@@ -61,7 +61,7 @@ XDG_STATE_HOME = "/user/state"
 XDG_DATA_HOME = "/user/data"
 XDG_RUNTIME_DIR = "/user/runtime"
 PATH = "/private/bin:/usr/bin:/bin"
-NEARSHELL_HC = "/private/bin/nearshell-hc"
+NEARSHELL_HC = "/private/bin/nhc"
 ```
 
 Run, nested run, replacement shells (keep), and exec use the same merge:
@@ -105,8 +105,8 @@ AppSupport root, not its socket cleanup directory):
    top-level `owner_token_sha256` in private config.toml. This is a verifier,
    not a token file. Rotate it on every owner takeover, including a surviving
    core; old tokens then fail. Release management.lock after config publication.
-4. Invoke `nearshell-hc server start|stop|restart --owner-token TOKEN` or
-   `nearshell-hc update --from FILE --owner-token TOKEN`. The option is explicit,
+4. Invoke `nhc server start|stop|restart --owner-token TOKEN` or
+   `nhc update --from FILE --owner-token TOKEN`. The option is explicit,
    never read from environment/config/token files. Do not log commands containing
    it. The server requires the same `owner_token` parameter on stop/restart,
    start (against an existing core), and `server.authorize` (pre-swap check).
@@ -153,12 +153,12 @@ program/holder environments or restart_env. `server::serve()` without a token
 cannot start a managed core.
 
 **替换受管副本后必须 owner restart 才能新建终端。** 受管路径统一为
-`<root>/bin/nearshell-hc`。即使 R 与 B 的 P8 身份和 hash 完全相同，只要 D 不同或损坏，
+`<root>/bin/nhc`。即使 R 与 B 的 P8 身份和 hash 完全相同，只要 D 不同或损坏，
 也必须先原子复制可信 B 为 D，再由 owner 计划内 restart；待确认新 core 身份后才能
 继续新建终端。已有 PTY 由 holder 保留，不修改 holder 的构建身份校验。
 不要把“旧终端仍存活”视为新 core/holder 已可接收新任务。
 
-Managed update only replaces `<root>/bin/nearshell-hc`. It rejects other config
+Managed update only replaces `<root>/bin/nhc`. It rejects other config
 identities, lower releaseSeq, or unequal identities at equal releaseSeq, even
 with --force. It reads candidate, installed and running identities; checks the
 staged candidate and installed identity again; then revalidates local and live
@@ -228,3 +228,9 @@ rows. Receivers replace their parser at `paint_begin`, so a screen-only resync
 would otherwise silently erase scrollback. Alternate screens retain their
 screen-only semantics. CREDIT and shared pending budgets still apply to the
 entire replay. Unmarked viewers keep upstream behavior.
+
+## nhc 命令与环境
+
+managed命令为nhc，不提供旧名或hc别名；NEARSHELL_HC仍是绝对命令入口。App owner负责在programs.env里前置私有bin并写入NEARSHELL_HC。run/exec/keep均重新读取config，新程序采用新环境，已有PTY进程不受追溯修改。改名时App先验签安装nhc、按既有owner restart保留旧PTY，再删除其私有bin旧入口。
+
+managed机器连接使用nhc connect，不回退upstream hc/herdr-core；已登记机器需对端升级并配置非交互SSH命令路径。自定义via字符串不自动修改，旧命令路径需用户显式更新。非managed安装/远端行为保持上游。

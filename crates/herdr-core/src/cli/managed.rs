@@ -93,7 +93,7 @@ fn forward(candidate: &Value, previous: &Value) -> bool {
 fn update(paths: &Paths, from: &Path, token: &str) -> Result<Out, RpcError> {
     let dest = std::env::current_exe().and_then(|p| p.canonicalize()).map_err(|_| invalid_build())?;
     // Never rewrite a bundle, a build output, or the user's independent hc.
-    if dest != owner::root(paths)?.canonicalize().map_err(|_| invalid_build())?.join("bin/nearshell-hc") {
+    if dest != owner::root(paths)?.canonicalize().map_err(|_| invalid_build())?.join("bin/nhc") {
         return Err(invalid_build());
     }
     let candidate = build(from)?;

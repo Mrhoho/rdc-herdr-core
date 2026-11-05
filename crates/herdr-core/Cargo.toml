@@ -15,7 +15,7 @@ managed = ["dep:sha2"]
 managed-test = ["managed"]
 
 [[bin]]
-name = "nearshell-hc"
+name = "nhc"
 path = "src/nearshell_main.rs"
 required-features = ["managed"]
 

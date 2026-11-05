@@ -211,7 +211,11 @@ const WINDOWS_HC: &str = r".\AppData\Local\Programs\herdr-core\herdr-core.exe";
 fn pipe(paths: &crate::paths::Paths, to: Reach, session: Option<&str>) -> tokio::process::Command {
     let remote = if cfg!(feature = "managed") {
         // Only the bundled command, never an upstream hc/herdr-core fallback.
-        format!("nearshell-hc connect{}", session.map(|s| format!(" --session {s}")).unwrap_or_default())
+        format!(
+            "{} connect{}",
+            crate::branding::COMMAND,
+            session.map(|s| format!(" --session {s}")).unwrap_or_default()
+        )
     } else if is_windows(to.target) {
         format!("{WINDOWS_HC} connect{}", session.map(|s| format!(" --session {s}")).unwrap_or_default())
     } else {
@@ -559,7 +563,7 @@ mod tests {
         let cmd = pipe(&paths, Reach { target: "winbox", via: false }, Some("s1"));
         let line = cmd.as_std().get_args().last().unwrap().to_string_lossy().into_owned();
         let expected = if cfg!(feature = "managed") {
-            "nearshell-hc connect --session s1"
+            "nhc connect --session s1"
         } else {
             r".\AppData\Local\Programs\herdr-core\herdr-core.exe connect --session s1"
         };
