@@ -182,6 +182,49 @@ fn read_eventually(path: &std::path::Path) -> String {
     }
 }
 #[test]
+fn managed_owner_path_resolves_program_and_env_shebang_without_restart() {
+    use serde_json::json;
+    let s = Scratch::new();
+    let bin = s.0.join("node bin");
+    std::fs::create_dir(&bin).unwrap();
+    // Deterministic node CLI stand-in: lookup and /usr/bin/env must both use
+    // the owner's PATH, never the RPC caller's environment.
+    std::os::unix::fs::symlink("/bin/sh", bin.join("node")).unwrap();
+    let program = bin.join("codex-path-fixture");
+    std::fs::write(&program, "#!/usr/bin/env node\nprintf 'DONE=yes\\n' > \"$1\"\n").unwrap();
+    herdr_core::platform::make_executable(&program).unwrap();
+    let config = |path: &str| format!("socket = '{}'\n[programs.env]\nPATH = '{path}'", s.socket().display());
+    s.config(&config("/usr/bin:/bin"));
+    let before = value(s.owner_cmd().env("PATH", "/usr/bin:/bin").args(["server", "start"]).output().unwrap());
+    error(s.cmd().env("PATH", &bin).args(["run", "--bg", "codex-path-fixture"]).output().unwrap(), "spawn_failed");
+    let missing = rpc(&s, "machine.exec", json!({"argv":[program]})).unwrap();
+    assert_eq!(missing["code"], 127);
+    for method in ["terminal.run", "machine.exec"] {
+        assert_eq!(
+            rpc(&s, method, json!({"argv":["codex-path-fixture"],"env":{"PATH":bin}})).unwrap_err().kind,
+            "managed_program_env"
+        );
+    }
+    s.config(&config(&format!("{}:/usr/bin:/bin", bin.display())));
+    for (index, executable) in ["codex-path-fixture", program.to_str().unwrap()].iter().enumerate() {
+        let output = s.0.join(format!("run-{index}"));
+        value(
+            s.cmd()
+                .env("PATH", "/caller-only")
+                .args(["run", "--bg", "--name", &format!("path-{index}"), executable, output.to_str().unwrap()])
+                .output()
+                .unwrap(),
+        );
+        assert_eq!(read_eventually(&output), "DONE=yes\n");
+        let output = s.0.join(format!("exec-{index}"));
+        let result = rpc(&s, "machine.exec", json!({"argv":[executable, output]})).unwrap();
+        assert_eq!(result["code"], 0);
+        assert_eq!(read_eventually(&output), "DONE=yes\n");
+    }
+    assert_eq!(rpc(&s, "server.status", json!({})).unwrap()["pid"], before["pid"]);
+}
+
+#[test]
 fn managed_run_exec_nested_and_keep_share_program_environment() {
     use serde_json::json;
     let s = Scratch::new();

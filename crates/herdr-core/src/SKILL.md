@@ -361,6 +361,10 @@ restart or update it (`managed_by_owner` on refusal). Do not read or discover an
 owner token from disk. Per-call environment overrides accept only TERM,
 TERM_PROGRAM, TERM_PROGRAM_VERSION and COLORTERM. Program environment defaults
 and removals come from the owner's `[programs] env/unset` config; violations
-return `managed_program_env`. Run/keep have fresh terminal identity, exec does
+return `managed_program_env`. The caller's shell PATH is not forwarded by `run`.
+The App owner supplies the user's shell PATH in `programs.env.PATH`; it is used
+for both program lookup and child interpreters such as `#!/usr/bin/env node`.
+New run/exec/keep processes re-read this config without restarting core; already
+running programs keep their environment. Run/keep have fresh terminal identity, exec does
 not. These restrictions do not apply to upstream/default builds. Launcher and
 owner integration details are in `docs/nearshell-build.md` in the source tree.
