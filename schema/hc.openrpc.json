@@ -1890,6 +1890,21 @@
           }
         },
         {
+          "description": "Initial columns (1-65535; default: configured headless columns).",
+          "name": "cols",
+          "required": false,
+          "schema": {
+            "description": "Initial columns (1-65535; default: configured headless columns).",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 1,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        {
           "description": "Working directory (default: where hc runs; through the API, the core's;\nwith --on, that machine's home).",
           "name": "cwd",
           "required": false,
