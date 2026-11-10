@@ -74,12 +74,27 @@ fn hc_flags_after_a_template_task_are_still_hcs() {
     let s = session();
     template(&s, "reviewer", &format!("---\ndescription: r\ncommand: {ECHO_AGENT}\n---\n"));
     let cwd = s.root.display().to_string();
-    let r =
-        s.json(&["run", "--bg", "--cwd", &cwd, "reviewer", "review x", "--name", "r1", "--label=k=v", "--no-notify"]);
+    let r = s.json(&[
+        "run",
+        "--bg",
+        "--cwd",
+        &cwd,
+        "reviewer",
+        "review x",
+        "--name",
+        "r1",
+        "--label=k=v",
+        "--no-notify",
+        "--cols",
+        "91",
+        "--rows",
+        "27",
+    ]);
     assert_eq!((r["name"].as_str(), r["first_message"]["sent"].as_bool()), (Some("r1"), Some(true)));
     let got = s.json(&["get", "r1"]);
     assert_eq!((got["labels"]["k"].as_str(), got["notify"].as_bool()), (Some("v"), Some(false)));
     assert_eq!(got["cwd"], cwd.as_str(), "flags before the template stay too");
+    assert_eq!((got["cols"].as_u64(), got["rows"].as_u64()), (Some(91), Some(27)));
     wait_until("task", || text(&s, "r1").contains("got:review x"));
     assert!(!text(&s, "r1").contains("--name"), "{}", text(&s, "r1"));
     // A flag after the task without its value is a mistake, not a program to run.

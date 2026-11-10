@@ -86,6 +86,9 @@ pub(super) async fn start(
     p: RunParams,
     template: Option<crate::templates::Template>,
 ) -> Result<Terminal, RpcError> {
+    if p.cols == Some(0) || p.rows == Some(0) {
+        return Err(RpcError::invalid_params("cols and rows must be between 1 and 65535"));
+    }
     not_stopping(&core.lock())?;
     #[cfg(feature = "managed")]
     let settings = crate::config::load(&core.paths.config)?;
@@ -100,7 +103,8 @@ pub(super) async fn start(
     })?;
     #[cfg(not(feature = "managed"))]
     let settings = crate::config::load(&core.paths.config)?;
-    let (cols, rows) = settings.headless()?;
+    let (headless_cols, headless_rows) = settings.headless()?;
+    let (cols, rows) = (p.cols.unwrap_or(headless_cols), p.rows.unwrap_or(headless_rows));
     // A caller on another machine has no folder here: home, then.
     let from_afar = p.caller.as_deref().is_some_and(|c| c.contains('/'));
     let cwd = crate::exec::folder(p.cwd.as_deref(), from_afar);
