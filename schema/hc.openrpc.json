@@ -1719,11 +1719,11 @@
           }
         },
         {
-          "description": "Initial columns (1-65535; default: configured headless columns).",
+          "description": "Initial and unowned columns (1-65535; persisted across core restarts; default: current headless columns).",
           "name": "cols",
           "required": false,
           "schema": {
-            "description": "Initial columns (1-65535; default: configured headless columns).",
+            "description": "Initial and unowned columns (1-65535; persisted across core restarts; default: current headless columns).",
             "format": "uint16",
             "maximum": 65535,
             "minimum": 1,
@@ -1880,11 +1880,11 @@
           }
         },
         {
-          "description": "Initial rows (1-65535; default: configured headless rows).",
+          "description": "Initial and unowned rows (1-65535; persisted across core restarts; default: current headless rows).",
           "name": "rows",
           "required": false,
           "schema": {
-            "description": "Initial rows (1-65535; default: configured headless rows).",
+            "description": "Initial and unowned rows (1-65535; persisted across core restarts; default: current headless rows).",
             "format": "uint16",
             "maximum": 65535,
             "minimum": 1,

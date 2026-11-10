@@ -161,6 +161,9 @@ pub(super) async fn start(
             identity: identity.clone(),
         };
         let id = st.reg.create(new, now_ms())?;
+        let rec = st.reg.terminals.get_mut(&id).expect("just created");
+        rec.headless_cols = p.cols;
+        rec.headless_rows = p.rows;
         let mut screen = ghostty_vt::Terminal::new(cols, rows, settings.history_bytes());
         screen.set_xtversion(&identity);
         st.screens.insert(id, screen);
