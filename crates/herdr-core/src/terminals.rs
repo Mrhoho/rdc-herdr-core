@@ -51,6 +51,11 @@ pub struct Terminal {
     pub screen: String,
     pub cols: u16,
     pub rows: u16,
+    /// Explicit run dimensions used while no typing viewer owns the size.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub headless_cols: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub headless_rows: Option<u16>,
     /// Which terminal the program believes it runs in (TERM_PROGRAM and
     /// version), fixed at start; XTVERSION answers with it.
     #[serde(default)]
@@ -283,6 +288,8 @@ impl Registry {
                 screen: "exact".into(),
                 cols: new.cols,
                 rows: new.rows,
+                headless_cols: None,
+                headless_rows: None,
                 identity: new.identity,
                 status: None,
                 status_ms: None,
@@ -411,6 +418,8 @@ impl Registry {
 /// The core's own bookkeeping in the record: saved with it, never shown.
 const PRIVATE: &[&str] = &[
     "first_task_turn",
+    "headless_cols",
+    "headless_rows",
     "news",
     "seen",
     "noted",

@@ -171,7 +171,10 @@ started once you have their results: `hc kill <t>; hc rm <t>`.
 Set `--cols N --rows N` on `run` when the program needs a particular initial
 terminal size. Each dimension accepts 1–65535; an omitted dimension uses its
 configured headless value. The child sees this size from its first instruction,
-before any viewer attaches. API callers pass optional `cols` and `rows` to
+before any viewer attaches. Explicit dimensions also remain this terminal's
+headless size (including after core restart and when its last typing viewer
+leaves); omitted dimensions continue to follow the current headless configuration.
+API callers pass optional `cols` and `rows` to
 `terminal.run`; invalid dimensions are rejected, never clamped.
 
 `run` times out after 180 seconds by default (`--timeout S`): it prints

@@ -1890,11 +1890,11 @@
           }
         },
         {
-          "description": "Initial columns (1-65535; default: configured headless columns).",
+          "description": "Initial and unowned columns (1-65535; persisted across core restarts; default: current headless columns).",
           "name": "cols",
           "required": false,
           "schema": {
-            "description": "Initial columns (1-65535; default: configured headless columns).",
+            "description": "Initial and unowned columns (1-65535; persisted across core restarts; default: current headless columns).",
             "format": "uint16",
             "maximum": 65535,
             "minimum": 1,

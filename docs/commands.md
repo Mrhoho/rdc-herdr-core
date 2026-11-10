@@ -506,8 +506,8 @@ Options:
       --json               JSON output even in a terminal
       --name <NAME>        Name, unique among live terminals: 1-32 of a-z 0-9 - _ 
       --cwd <CWD>          Working directory (default: where hc runs; through the API, the core's; with --on, that machine's home)
-      --cols <COLS>        Initial columns (1-65535; default: configured headless columns)
-      --rows <ROWS>        Initial rows (1-65535; default: configured headless rows)
+      --cols <COLS>        Initial and unowned columns (1-65535; persisted across core restarts; default: current headless columns)
+      --rows <ROWS>        Initial and unowned rows (1-65535; persisted across core restarts; default: current headless rows)
       --on <MACHINE>       Run it on another machine (see `hc machine ls`); its address is `machine/t7`
       --label <K=V>        Labels, key=value (repeatable)
       --parent <PARENT>    Parent terminal (default: the terminal it is started from)

@@ -263,12 +263,12 @@ pub struct RunParams {
     /// with --on, that machine's home).
     #[arg(long)]
     pub cwd: Option<String>,
-    /// Initial columns (1-65535; default: configured headless columns).
+    /// Initial and unowned columns (1-65535; persisted across core restarts; default: current headless columns).
     #[arg(long, value_parser = clap::value_parser!(u16).range(1..))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 1, max = 65535))]
     pub cols: Option<u16>,
-    /// Initial rows (1-65535; default: configured headless rows).
+    /// Initial and unowned rows (1-65535; persisted across core restarts; default: current headless rows).
     #[arg(long, value_parser = clap::value_parser!(u16).range(1..))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 1, max = 65535))]
