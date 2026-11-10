@@ -449,7 +449,16 @@ impl Core {
     /// with none, the terminal runs headless.
     fn apply_size(&self, st: &mut State, id: u32) {
         let leader = st.viewers.get(&id).and_then(|vs| vs.iter().filter(|v| !v.observe).max_by_key(|v| v.active_at));
-        let (cols, rows) = leader.map_or_else(|| self.headless(), |v| v.size);
+        let (cols, rows) = leader.map_or_else(
+            || {
+                let (cols, rows) = self.headless();
+                st.reg
+                    .terminals
+                    .get(&id)
+                    .map_or((cols, rows), |rec| (rec.headless_cols.unwrap_or(cols), rec.headless_rows.unwrap_or(rows)))
+            },
+            |v| v.size,
+        );
         let display = leader.map(|v| v.display.clone());
         if !st.screens.contains_key(&id) {
             return;

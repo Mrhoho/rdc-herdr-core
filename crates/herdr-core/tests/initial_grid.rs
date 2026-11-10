@@ -75,3 +75,78 @@ fn invalid_initial_grid_is_rejected_without_creating_a_terminal() {
         assert!(!s.cmd().args(["run", "--bg", "--cols", value, "sleep", "100"]).output().unwrap().status.success());
     }
 }
+
+#[test]
+fn explicit_grid_is_neutral_for_observers_and_restored_after_owner_and_restart() {
+    use common::framed::Viewer;
+    let s = Session::new();
+    let output = s.root.join("winsize.json");
+    let script = r#"import os,signal,json,sys
+records=[]
+def record(kind):
+    size=os.get_terminal_size(0)
+    records.append([kind,size.columns,size.lines])
+    with open(sys.argv[1], 'w') as f: json.dump(records,f)
+signal.signal(signal.SIGWINCH,lambda *_:record('winch'))
+record('first')
+print('READY',flush=True)
+while True: signal.pause()
+"#;
+    let mut conn = Framed::open(&s);
+    let reply = conn.call("terminal.run", json!({"argv":["python3","-u","-c",script,output],"cols":91,"rows":27}));
+    let t = reply["result"]["address"].as_str().unwrap();
+    let read = || std::fs::read(&output).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok());
+    wait_until("first PTY size", || read().is_some());
+    let pid = s.json(&["get", t])["pid"].clone();
+    let observer = Viewer::attach(&s, t, 80, 24, json!({"observe":true}));
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(read().unwrap(), json!([["first", 91, 27]]), "an observer must not send SIGWINCH");
+    let owner = Viewer::attach(&s, t, 70, 20, json!({}));
+    wait_until("owner size", || {
+        read().is_some_and(|v| v.as_array().unwrap().last() == Some(&json!(["winch", 70, 20])))
+    });
+    drop(owner);
+    wait_until("spawn grid restored", || {
+        read().is_some_and(|v| v.as_array().unwrap().last() == Some(&json!(["winch", 91, 27])))
+    });
+    assert_eq!(read().unwrap().as_array().unwrap().len(), 3);
+    drop(observer);
+    drop(conn);
+    s.json(&["server", "restart"]);
+    assert_eq!(s.json(&["get", t])["pid"], pid, "restart must retain the same PTY");
+    let _observer = Viewer::attach(&s, t, 80, 24, json!({"observe":true}));
+    let record = s.json(&["get", t]);
+    assert_eq!((record["cols"].as_u64(), record["rows"].as_u64()), (Some(91), Some(27)));
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(read().unwrap().as_array().unwrap().len(), 3, "persisted fallback must survive core restart");
+}
+
+#[test]
+fn unspecified_dimensions_still_follow_dynamic_headless_configuration() {
+    use common::framed::Viewer;
+    let s = Session::new();
+    std::fs::create_dir_all(s.root.join("config/herdr-core")).unwrap();
+    let config = s.root.join("config/herdr-core/config.toml");
+    std::fs::write(&config, "headless = \"100x30\"\n").unwrap();
+    for (params, expected) in [(json!({"cols":91}), (91, 40)), (json!({"rows":27}), (110, 27)), (json!({}), (110, 40))]
+    {
+        std::fs::write(&config, "headless = \"100x30\"\n").unwrap();
+        let mut conn = Framed::open(&s);
+        let mut params = params;
+        params["argv"] = json!(["sleep", "100"]);
+        let reply = conn.call("terminal.run", params);
+        let t = reply["result"]["address"].as_str().unwrap();
+        std::fs::write(&config, "headless = \"110x40\"\n").unwrap();
+        // Observers preserve the current size since upstream v0.1.21. Leaving
+        // the last interactive viewer re-evaluates the headless configuration.
+        let owner = Viewer::attach(&s, t, 80, 24, json!({}));
+        drop(owner);
+        wait_until("headless dimensions refreshed", || {
+            let record = s.json(&["get", t]);
+            (record["cols"].as_u64(), record["rows"].as_u64()) == (Some(expected.0), Some(expected.1))
+        });
+        let _observer = Viewer::attach(&s, t, 80, 24, json!({"observe":true}));
+        let record = s.json(&["get", t]);
+        assert_eq!((record["cols"].as_u64(), record["rows"].as_u64()), (Some(expected.0), Some(expected.1)));
+    }
+}

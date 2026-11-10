@@ -183,6 +183,9 @@ pub(super) async fn start(
             display.apply(&mut screen).map_err(|e| RpcError::new("unavailable", e.to_string(), "retry the run"))?;
         }
         let id = st.reg.create(new, now_ms())?;
+        let rec = st.reg.terminals.get_mut(&id).expect("just created");
+        rec.headless_cols = p.cols;
+        rec.headless_rows = p.rows;
         st.screens.insert(id, screen);
         let (env, scope) = terminal_env(core, id, &cwd, env);
         st.reg.terminals.get_mut(&id).expect("just created").scope = Some(scope);
