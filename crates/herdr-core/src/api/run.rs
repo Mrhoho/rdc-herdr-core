@@ -94,6 +94,9 @@ pub(super) async fn start(
     p: RunParams,
     template: Option<crate::templates::Template>,
 ) -> Result<Terminal, RpcError> {
+    if p.cols == Some(0) || p.rows == Some(0) {
+        return Err(RpcError::invalid_params("cols and rows must be between 1 and 65535"));
+    }
     not_stopping(&core.lock())?;
     #[cfg(feature = "managed")]
     let settings = crate::config::load(&core.paths.config)?;
@@ -108,10 +111,16 @@ pub(super) async fn start(
     })?;
     #[cfg(not(feature = "managed"))]
     let settings = crate::config::load(&core.paths.config)?;
+    if p.size.is_some() && (p.cols.is_some() || p.rows.is_some()) {
+        return Err(RpcError::invalid_params("size cannot be combined with cols or rows"));
+    }
     let (cols, rows) = match p.size {
         Some(size) if size.cols > 0 && size.rows > 0 => (size.cols, size.rows),
         Some(_) => return Err(RpcError::invalid_params("size.cols and size.rows must be at least 1")),
-        None => settings.headless()?,
+        None => {
+            let (cols, rows) = settings.headless()?;
+            (p.cols.unwrap_or(cols), p.rows.unwrap_or(rows))
+        }
     };
     // A caller on another machine has no folder here: home, then.
     let from_afar = p.caller.as_deref().is_some_and(|c| c.contains('/'));

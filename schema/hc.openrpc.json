@@ -1911,6 +1911,21 @@
           }
         },
         {
+          "description": "Initial columns (1-65535; default: configured headless columns).",
+          "name": "cols",
+          "required": false,
+          "schema": {
+            "description": "Initial columns (1-65535; default: configured headless columns).",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 1,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        {
           "description": "Working directory (default: where hc runs; through the API, the core's;\nwith --on, that machine's home).",
           "name": "cwd",
           "required": false,
@@ -2073,7 +2088,22 @@
           }
         },
         {
-          "description": "Initial size before the program starts. Omitted: the configured\nheadless size (default 200 columns by 120 rows). Later viewers resize normally.",
+          "description": "Initial rows (1-65535; default: configured headless rows).",
+          "name": "rows",
+          "required": false,
+          "schema": {
+            "description": "Initial rows (1-65535; default: configured headless rows).",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 1,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        {
+          "description": "Initial size before the program starts. Omitted: the configured\nheadless size (default 200 columns by 120 rows). Later viewers resize normally.\nCannot be combined with the persistent per-dimension cols/rows overrides.",
           "name": "size",
           "required": false,
           "schema": {
@@ -2085,7 +2115,7 @@
                 "type": "null"
               }
             ],
-            "description": "Initial size before the program starts. Omitted: the configured\nheadless size (default 200 columns by 120 rows). Later viewers resize normally."
+            "description": "Initial size before the program starts. Omitted: the configured\nheadless size (default 200 columns by 120 rows). Later viewers resize normally.\nCannot be combined with the persistent per-dimension cols/rows overrides."
           }
         },
         {

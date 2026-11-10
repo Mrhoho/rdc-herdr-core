@@ -659,9 +659,12 @@ fn managed_marked_paint_negotiates_and_survives_split_and_coalesced_frames() {
     use serde_json::json;
     use std::io::{BufRead, Read, Write};
     let s = Scratch::new();
-    s.config(&format!("socket = '{}'\nheadless='80x24'", s.socket().display()));
+    s.config(&format!("socket = '{}'\nheadless='100x30'", s.socket().display()));
     s.start();
-    let run = rpc(&s, "terminal.run", json!({"argv":["sh","-c","printf MARKED; sleep 60"],"bg":true})).unwrap();
+    let run =
+        rpc(&s, "terminal.run", json!({"argv":["sh","-c","printf MARKED; sleep 60"],"bg":true,"cols":80,"rows":24}))
+            .unwrap();
+    assert_eq!((run["cols"].as_u64(), run["rows"].as_u64()), (Some(80), Some(24)));
     let mut stream = std::os::unix::net::UnixStream::connect(s.socket()).unwrap();
     stream.set_read_timeout(Some(std::time::Duration::from_secs(10))).unwrap();
     writeln!(stream, "{}", json!({"jsonrpc":"2.0","id":1,"method":"hello","params":{"framed":true}})).unwrap();
