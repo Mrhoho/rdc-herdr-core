@@ -64,7 +64,15 @@ fn kill_spares_programs_that_ignore_hangup() {
 #[test]
 fn detached_programs_survive_a_normal_exit() {
     let s = Session::new();
-    let script = format!("{} {} sleep 0.3", stubborn(&s, "same", false), stubborn(&s, "detached", true));
+    // A loaded host may need more than 300 ms to start Python. Exit only
+    // after both helpers have installed their SIGHUP handlers and detached.
+    let script = format!(
+        "{} {} while [ ! -s '{}' ] || [ ! -s '{}' ]; do sleep 0.01; done",
+        stubborn(&s, "same", false),
+        stubborn(&s, "detached", true),
+        s.root.join("same").display(),
+        s.root.join("detached").display()
+    );
     let t = run(&s, &script);
     let pids = started(&s, &["same", "detached"]);
     let survivors = Survivors(pids);
