@@ -27,6 +27,7 @@ impl Budget {
     pub fn denied(&self) -> usize {
         self.denied.load(Ordering::Relaxed)
     }
+    #[allow(deprecated)] // Keep compatibility with the upstream Rust toolchain.
     fn take(&self, bytes: usize) -> bool {
         match self.used.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
             used.checked_add(bytes).filter(|n| *n <= self.limit)
@@ -111,6 +112,9 @@ struct Vtable {
 impl Allocator {
     pub(crate) fn new(budget: &Arc<Budget>) -> Box<Self> {
         Box::new(Self { ctx: Arc::as_ptr(budget), vtable: &VTABLE, _budget: budget.clone() })
+    }
+    pub(crate) fn budget(&self) -> &Arc<Budget> {
+        &self._budget
     }
     pub(crate) fn as_ptr(&self) -> *const std::ffi::c_void {
         (self as *const Self).cast()

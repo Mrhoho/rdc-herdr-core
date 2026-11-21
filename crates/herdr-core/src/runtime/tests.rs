@@ -300,6 +300,7 @@ async fn server_exit_flushes_even_when_background_tasks_still_own_core() {
 }
 
 #[tokio::test]
+#[cfg(not(feature = "managed"))]
 async fn server_stop_succeeds_even_when_the_registry_flush_times_out() {
     let (mut core, root) = test_core();
     core.flush_saved().await.unwrap();
@@ -440,6 +441,7 @@ fn a_blocked_registry_write_does_not_hold_the_core_lock() {
 }
 
 #[tokio::test]
+#[cfg(not(feature = "managed"))]
 async fn a_prepared_restart_survives_sigterm_and_rejects_stop() {
     let root = std::env::temp_dir().join(format!("hc-restart-stop-{}", platform::random_hex()));
     let paths = Paths {

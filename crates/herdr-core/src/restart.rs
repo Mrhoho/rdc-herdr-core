@@ -26,6 +26,7 @@ fn now_ms() -> io::Result<u64> {
     Ok(SystemTime::now().duration_since(UNIX_EPOCH).map_err(io::Error::other)?.as_millis() as u64)
 }
 
+#[cfg(not(feature = "managed"))]
 pub(crate) fn prepare(core: &Core, environment: Option<BTreeMap<String, String>>) -> io::Result<()> {
     let fresh = environment.is_some();
     let vars = environment.map(replacement_environment).transpose()?.unwrap_or_else(current_environment);
@@ -45,6 +46,7 @@ pub(crate) fn prepare(core: &Core, environment: Option<BTreeMap<String, String>>
     Ok(())
 }
 
+#[cfg(not(feature = "managed"))]
 fn current_environment() -> Vec<(OsString, OsString)> {
     std::env::vars_os().filter(|(key, _)| !key.as_encoded_bytes().starts_with(b"=")).collect()
 }
@@ -130,6 +132,10 @@ fn validate(vars: &[(OsString, OsString)]) -> io::Result<()> {
 /// # Safety
 /// No other thread may read or write the process environment.
 pub(crate) unsafe fn restore(paths: &Paths) {
+    if cfg!(feature = "managed") {
+        discard(paths);
+        return;
+    }
     sweep_temporary(paths);
     let env = match load(paths) {
         Ok(Some(env)) => env,

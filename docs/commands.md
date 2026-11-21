@@ -86,7 +86,7 @@ Arguments:
 Options:
       --json               JSON output even in a terminal
       --observe            Watch only: never type or resize
-      --history <HISTORY>  Scrollback lines to show first (main screen only) [default: 0]
+      --history <HISTORY>  Main-screen scrollback lines to replay, including the hidden primary screen when attached on alternate. For marked viewers, also bounds later paints [default: 0]
   -h, --help               Print help
 ```
 

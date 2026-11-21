@@ -2640,12 +2640,12 @@
           }
         },
         {
-          "description": "Scrollback lines to show first (main screen only).",
+          "description": "Main-screen scrollback lines to replay, including the hidden primary\nscreen when attached on alternate. For marked viewers, also bounds later paints.",
           "name": "history",
           "required": false,
           "schema": {
             "default": 0,
-            "description": "Scrollback lines to show first (main screen only).",
+            "description": "Main-screen scrollback lines to replay, including the hidden primary\nscreen when attached on alternate. For marked viewers, also bounds later paints.",
             "format": "uint",
             "minimum": 0,
             "type": "integer"

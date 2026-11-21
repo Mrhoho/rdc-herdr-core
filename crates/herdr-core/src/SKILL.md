@@ -377,5 +377,8 @@ The App owner supplies the user's shell PATH in `programs.env.PATH`; it is used
 for both program lookup and child interpreters such as `#!/usr/bin/env node`.
 New run/exec/keep processes re-read this config without restarting core; already
 running programs keep their environment. Run/keep have fresh terminal identity, exec does
-not. These restrictions do not apply to upstream/default builds. Launcher and
+not. Managed launches bypass upstream launchd/session repair and restart-environment
+handoffs: the owner supplies the clean launch environment. `server restart --fresh`
+and RPC restart `environment` are rejected, and `restart_environment` is not advertised.
+These restrictions do not apply to upstream/default builds. Launcher and
 owner integration details are in `docs/nearshell-build.md` in the source tree.

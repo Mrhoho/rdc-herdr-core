@@ -132,6 +132,7 @@ impl Core {
             st.viewers.get_mut(&id).unwrap().last_mut().unwrap().recovering = false;
             conn.with(|out| {
                 out.open_viewer(channel, true, self.paint_budget.clone());
+                out.pause(channel);
             });
             self.enqueue_paint(&st, id, conn, channel, req.history, crate::paint::Reason::Attach, false, 0);
             return Ok(channel);

@@ -437,7 +437,8 @@ pub struct AttachParams {
     #[arg(skip)]
     #[serde(default)]
     pub resize_notifications: bool,
-    /// Scrollback lines to show first (main screen only).
+    /// Main-screen scrollback lines to replay, including the hidden primary
+    /// screen when attached on alternate. For marked viewers, also bounds later paints.
     #[arg(long, default_value_t = 0)]
     #[serde(default)]
     pub history: usize,

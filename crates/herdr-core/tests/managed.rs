@@ -382,6 +382,14 @@ fn owner_gates_cli_direct_rpc_and_orphaned_tokens_but_not_ordinary_calls() {
             .unwrap(),
     );
     let pid = first["pid"].clone();
+    error(s.owner_cmd().args(["server", "restart", "--fresh"]).output().unwrap(), "invalid_params");
+    assert_eq!(
+        rpc(&s, "server.restart", json!({"owner_token":s.1,"environment":{"PATH":"/usr/bin:/bin"}})).unwrap_err().kind,
+        "invalid_params"
+    );
+    let hello = rpc(&s, "hello", json!({})).unwrap();
+    assert!(!hello["features"].as_array().unwrap().iter().any(|f| f == "restart_environment"));
+    assert_eq!(value(s.cmd().args(["server", "status"]).output().unwrap())["pid"], pid);
     for method in ["server.start", "server.stop", "server.restart", "server.authorize"] {
         for token in [None, Some("bad"), Some("0000000000000000000000000000000000000000000000000000000000000000")] {
             assert_eq!(rpc(&s, method, json!({"owner_token":token})).unwrap_err().kind, "managed_by_owner");
@@ -737,4 +745,60 @@ fn managed_marked_paint_negotiates_and_survives_split_and_coalesced_frames() {
             break;
         }
     }
+}
+
+#[test]
+fn previous_managed_holder_survives_a_new_binary_owner_restart() {
+    let Some(old) = std::env::var_os("NEARSHELL_HC_OLD_MANAGED_TEST_BIN") else {
+        eprintln!("skipped: supply a previous managed-test binary in NEARSHELL_HC_OLD_MANAGED_TEST_BIN");
+        return;
+    };
+    let s = Scratch::new();
+    s.config(&format!("socket = '{}'", s.socket().display()));
+    std::fs::create_dir_all(s.0.join("bin")).unwrap();
+    let dest = s.0.join("bin/nhc");
+    std::fs::copy(old, &dest).unwrap();
+    let cmd = || {
+        let mut command = Command::new(&dest);
+        command.env_clear();
+        for (key, value) in s.cmd().get_envs() {
+            if let Some(value) = value {
+                command.env(key, value);
+            }
+        }
+        command.args(["--owner-token", &s.1]);
+        command
+    };
+    let before = value(cmd().args(["server", "start"]).output().unwrap());
+    let terminal = rpc(
+        &s,
+        "terminal.run",
+        serde_json::json!({
+            "argv": ["/bin/sh", "-c", "echo OLD; while read line; do echo got-$line; done"],
+            "cols": 91, "rows": 27
+        }),
+    )
+    .unwrap();
+    let old_core = before["pid"].clone();
+    let replacement = s.0.join("replacement");
+    std::fs::copy(env!("CARGO_BIN_EXE_nhc"), &replacement).unwrap();
+    std::fs::rename(replacement, &dest).unwrap();
+    let after = value(cmd().args(["server", "restart"]).output().unwrap());
+    assert_ne!(after["pid"], old_core);
+    let kept = rpc(&s, "terminal.get", serde_json::json!({"terminal":terminal["address"]})).unwrap();
+    assert_eq!(kept["pid"], terminal["pid"]);
+    assert_eq!((kept["cols"].as_u64(), kept["rows"].as_u64()), (Some(91), Some(27)));
+    rpc(&s, "terminal.send", serde_json::json!({"terminal":terminal["address"],"text":"new"})).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let read = rpc(&s, "terminal.read", serde_json::json!({"terminal":terminal["address"]})).unwrap();
+        if read["text"].as_str().unwrap().contains("got-new") {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "old PTY did not accept input after upgrade");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let new = rpc(&s, "terminal.run", serde_json::json!({"argv":["/bin/sleep","60"]})).unwrap();
+    assert!(new["pid"].as_u64().is_some());
+    assert_ne!(new["pid"], terminal["pid"]);
 }

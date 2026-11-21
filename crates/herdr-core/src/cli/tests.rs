@@ -135,8 +135,10 @@ fn a_wait_prints_what_happened() {
 
 #[test]
 fn older_compares_versions_as_numbers() {
-    assert!(older("hc 0.1.9", "hc 0.2.0") && older("hc 0.2.0", "hc 0.10.0"));
-    assert!(!older("hc 0.2.0", "hc 0.2.0") && !older("hc 0.10.0", "hc 0.9.9") && !older("hc dev", "hc 0.2.0"));
+    let version = |v| format!("{} {v}", crate::branding::COMMAND);
+    let older = |a, b| older(&version(a), &version(b));
+    assert!(older("0.1.9", "0.2.0") && older("0.2.0", "0.10.0"));
+    assert!(!older("0.2.0", "0.2.0") && !older("0.10.0", "0.9.9") && !older("dev", "0.2.0"));
 }
 
 #[test]

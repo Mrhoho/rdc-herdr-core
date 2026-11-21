@@ -225,8 +225,10 @@ For `terminal.attach` with `marks: true`, `history: N` is a subscription bound,
 not only an initial-paint option. Every later synthetic paint (resize, display
 facts, overflow, stitch or holder restoration) replays up to the same N history
 rows. Receivers replace their parser at `paint_begin`, so a screen-only resync
-would otherwise silently erase scrollback. Alternate screens retain their
-screen-only semantics. CREDIT and shared pending budgets still apply to the
+would otherwise silently erase scrollback. As in upstream v0.1.21, attaching
+on an alternate screen also restores the hidden primary screen and its bounded
+history, so leaving the alternate screen reveals the original primary content.
+CREDIT and shared pending budgets still apply to the
 entire replay. Unmarked viewers keep upstream behavior.
 
 ## nhc 命令与环境

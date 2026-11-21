@@ -61,6 +61,9 @@ pub fn foreground_tracks_jobs() -> bool {
 
 /// Run before threads or runtime setup: a launchd launcher forks the core here.
 pub fn daemon_startup() -> bool {
+    if cfg!(feature = "managed") {
+        return false;
+    }
     #[cfg(target_os = "macos")]
     {
         macos_bundle::installer_startup();
@@ -76,7 +79,9 @@ pub fn daemon_startup() -> bool {
 /// A parsed serve may have come from an older updater's direct spawn.
 pub fn prepare_core() {
     #[cfg(target_os = "macos")]
-    macos_launchd::prepare_core();
+    if !cfg!(feature = "managed") {
+        macos_launchd::prepare_core();
+    }
 }
 
 /// Complete the holder's background-app registration before starting threads or terminals.
@@ -97,6 +102,9 @@ pub fn login_session() -> Option<LoginSession> {
 }
 
 pub fn connect_for_app(paths: &crate::paths::Paths) -> Result<Stream, crate::rpc::RpcError> {
+    if cfg!(feature = "managed") {
+        return crate::client::connect_or_start(paths);
+    }
     #[cfg(target_os = "macos")]
     {
         macos_session::connect(paths)
@@ -127,6 +135,9 @@ pub(crate) fn raise_nofile_limit() {
 }
 
 pub fn core_executable(exe: &std::path::Path) -> std::path::PathBuf {
+    if cfg!(feature = "managed") {
+        return exe.to_path_buf();
+    }
     #[cfg(target_os = "macos")]
     {
         macos_bundle::core_executable(exe)
@@ -173,6 +184,9 @@ pub fn verify_release_bundle(path: &std::path::Path) -> std::io::Result<()> {
 /// macOS cores leave the app's process coalition; holders inherit the core's.
 #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
 pub fn spawn_core_job(cmd: &mut std::process::Command, log: &std::path::Path) -> bool {
+    if cfg!(feature = "managed") {
+        return false;
+    }
     #[cfg(target_os = "macos")]
     if cmd.get_args().next() == Some(std::ffi::OsStr::new("serve")) {
         return macos_launchd::spawn(cmd, log);
