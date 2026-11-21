@@ -135,7 +135,7 @@ error, exited); inspect its screen.
 API clients that already know a terminal's pane size can pass `size: {cols, rows}`
 to `terminal.run` (both positive). It applies before the program starts. Omit it
 for the unchanged configured headless size (default 200×120); later viewers
-still resize the terminal normally. `display: {fg, bg, cursor, cell}` (as in
+still resize the terminal normally. `display: {fg, bg, cursor, cell, palette, dark}` (as in
 `terminal.attach`) likewise answers the program's color and cell-size queries
 from its start, before any viewer attaches.
 
@@ -175,7 +175,9 @@ before any viewer attaches. Explicit dimensions also remain this terminal's
 headless size (including after core restart and when its last typing viewer
 leaves); omitted dimensions continue to follow the current headless configuration.
 API callers pass optional `cols` and `rows` to
-`terminal.run`; invalid dimensions are rejected, never clamped.
+`terminal.run`; invalid dimensions are rejected, never clamped. Do not combine
+`size` with `cols` or `rows`. Observe-only attaches preserve the current size;
+headless defaults are re-evaluated when the last typing viewer leaves.
 
 `run` times out after 180 seconds by default (`--timeout S`): it prints
 `[hc] still running as t3` and exits 124, but the program keeps running.
@@ -369,5 +371,8 @@ The App owner supplies the user's shell PATH in `programs.env.PATH`; it is used
 for both program lookup and child interpreters such as `#!/usr/bin/env node`.
 New run/exec/keep processes re-read this config without restarting core; already
 running programs keep their environment. Run/keep have fresh terminal identity, exec does
-not. These restrictions do not apply to upstream/default builds. Launcher and
+not. Managed launches bypass upstream launchd/session repair and restart-environment
+handoffs: the owner supplies the clean launch environment. `server restart --fresh`
+and RPC restart `environment` are rejected, and `restart_environment` is not advertised.
+These restrictions do not apply to upstream/default builds. Launcher and
 owner integration details are in `docs/nearshell-build.md` in the source tree.

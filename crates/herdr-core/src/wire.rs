@@ -234,7 +234,13 @@ impl Outbox {
     /// Attach output must wait until the reply installs the receiver's channel mapping.
     pub fn open_paused(&mut self, channel: u32) {
         self.open(channel);
-        self.streams.get_mut(&channel).unwrap().paused = true;
+        self.pause(channel);
+    }
+
+    pub fn pause(&mut self, channel: u32) {
+        if let Some(s) = self.streams.get_mut(&channel) {
+            s.paused = true;
+        }
     }
 
     pub fn resume(&mut self, channel: u32) {

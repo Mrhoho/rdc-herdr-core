@@ -23,6 +23,9 @@ pub(super) fn command(paths: &Paths, cmd: &Cmd, token: Option<&str>) -> Result<O
         return Ok(None);
     }
     let _operation = owner::operation(paths, token)?;
+    if matches!(cmd, Cmd::Server { action: ServerCmd::Restart { fresh: true } }) {
+        return Err(RpcError::invalid_params("managed restart environment comes from owner"));
+    }
     let token = token.ok_or_else(owner::denied)?;
     authorize_server(paths, token)?;
     let result = match cmd {

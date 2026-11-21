@@ -65,6 +65,10 @@ fn invalid_initial_grid_is_rejected_without_creating_a_terminal() {
             let reply = conn.call("terminal.run", params);
             assert!(reply.get("error").is_some(), "{reply}");
         }
+        let mut params = json!({"argv":["sleep","100"],"size":{"cols":80,"rows":24}});
+        params[field] = json!(40);
+        let reply = conn.call("terminal.run", params);
+        assert_eq!(reply["error"]["data"]["kind"], "invalid_params", "{reply}");
     }
     assert!(s.json(&["ls"])["terminals"].as_array().unwrap().is_empty());
     for value in ["0", "65536"] {
@@ -133,6 +137,14 @@ fn unspecified_dimensions_still_follow_dynamic_headless_configuration() {
         let reply = conn.call("terminal.run", params);
         let t = reply["result"]["address"].as_str().unwrap();
         std::fs::write(&config, "headless = \"110x40\"\n").unwrap();
+        // Observers preserve the current size since upstream v0.1.21. Leaving
+        // the last interactive viewer re-evaluates the headless configuration.
+        let owner = Viewer::attach(&s, t, 80, 24, json!({}));
+        drop(owner);
+        wait_until("headless dimensions refreshed", || {
+            let record = s.json(&["get", t]);
+            (record["cols"].as_u64(), record["rows"].as_u64()) == (Some(expected.0), Some(expected.1))
+        });
         let _observer = Viewer::attach(&s, t, 80, 24, json!({"observe":true}));
         let record = s.json(&["get", t]);
         assert_eq!((record["cols"].as_u64(), record["rows"].as_u64()), (Some(expected.0), Some(expected.1)));

@@ -136,8 +136,6 @@ async fn automatic_input_survives_relays_but_not_a_capability_downgrade() {
             version: "test".into(),
             keeps_running_after_logout: None,
             logout_linger_user: None,
-            keeps_running_after_logout: None,
-            logout_linger_user: None,
         };
         let conn = Arc::new(Conn::default());
         conn.with(|out| out.open(7));

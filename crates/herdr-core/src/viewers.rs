@@ -56,8 +56,14 @@ pub struct Viewer {
 
 impl Display {
     /// Answer the program's color and cell-size queries with these facts.
-    pub(crate) fn apply(&self, screen: &mut ghostty_vt::Terminal) {
+    pub(crate) fn apply(&self, screen: &mut ghostty_vt::Terminal) -> std::io::Result<()> {
+        let entries = self.palette.as_ref().map(|p| {
+            p.iter().map(|(i, c)| (*i, rgb(&Some(c.clone())).expect("validated palette"))).collect::<Vec<_>>()
+        });
+        screen.set_palette(entries.as_deref())?;
         screen.set_display(rgb(&self.fg), rgb(&self.bg), rgb(&self.cursor), self.cell.map(|[w, h]| (w, h)));
+        screen.set_dark(self.dark);
+        Ok(())
     }
 }
 
@@ -126,6 +132,7 @@ impl Core {
             st.viewers.get_mut(&id).unwrap().last_mut().unwrap().recovering = false;
             conn.with(|out| {
                 out.open_viewer(channel, true, self.paint_budget.clone());
+                out.pause(channel);
             });
             self.enqueue_paint(&st, id, conn, channel, req.history, crate::paint::Reason::Attach, false, 0);
             return Ok(channel);
@@ -376,7 +383,6 @@ impl Core {
     }
 
     pub fn viewer_facts(&self, conn: &Arc<Conn>, channel: u32, display: Display) {
-        if display.validate().is_err() { return; }
         let mut st = self.lock();
         let Some((id, v)) = Self::viewer(&mut st, conn, channel) else { return };
         v.display.palette = display.palette.clone().or(v.display.palette.take());
@@ -516,16 +522,13 @@ impl Core {
         let State { screens, relays, .. } = st;
         let Some(screen) = screens.get_mut(&id) else { return };
         let before_colors = screen.default_colors();
-        if let Some(d) = display {
-            let entries = d.palette.as_ref().map(|p| p.iter().map(|(i,c)| (*i, rgb(&Some(c.clone())).expect("validated palette"))).collect::<Vec<_>>());
-            if screen.set_palette(entries.as_deref()).is_err() {
-                for v in st.viewers.get(&id).into_iter().flatten() {
-                    v.conn.with(|out| out.close(v.channel, br#"{"reason":"display_failed"}"#));
-                }
-                return;
+        if let Some(d) = display
+            && d.apply(screen).is_err()
+        {
+            for v in st.viewers.get(&id).into_iter().flatten() {
+                v.conn.with(|out| out.close(v.channel, br#"{"reason":"display_failed"}"#));
             }
-            d.apply(screen);
-            screen.set_dark(d.dark);
+            return;
         }
         let colors_changed = screen.default_colors() != before_colors;
         // Display changes can notify an idle program, even without a resize or output.

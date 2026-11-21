@@ -22,6 +22,7 @@ pub const FEATURES: &[&str] = &[
     "shell",
     "resize_notifications",
     "automatic_input",
+    #[cfg(not(feature = "managed"))]
     "restart_environment",
     "build-info",
     "connection-lifecycle",
@@ -278,6 +279,17 @@ async fn server_stop(core: Ctx<'_>, _p: ManagementParams) -> Result<StopResult, 
 async fn server_restart(core: Ctx<'_>, p: RestartParams) -> Result<StopResult, RpcError> {
     #[cfg(feature = "managed")]
     let _owner_lease = crate::owner::authorize(&core.paths, p.owner_token.as_deref())?;
+    #[cfg(feature = "managed")]
+    {
+        if p.environment.is_some() {
+            return Err(RpcError::invalid_params("managed restart environment comes from owner"));
+        }
+        let st = core.lock();
+        if st.stopping || core.restart.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return Err(RpcError::new("unavailable", "the core is stopping or restarting", "wait for completion"));
+        }
+    }
+    #[cfg(not(feature = "managed"))]
     crate::restart::prepare(core, p.environment).map_err(|e| {
         if e.kind() == std::io::ErrorKind::InvalidInput {
             RpcError::invalid_params(e.to_string())

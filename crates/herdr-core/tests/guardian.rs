@@ -15,6 +15,7 @@ fn guardian_child_fixture() {
     for holder in status["holders"].as_array().unwrap() {
         pids.push(holder["pid"].as_i64().unwrap());
     }
+    s.guardian.observe(&pids);
     if std::env::var_os("HC_GUARDIAN_REMOVE_ROOT").is_some() {
         std::fs::remove_dir_all(&s.root).unwrap();
     }

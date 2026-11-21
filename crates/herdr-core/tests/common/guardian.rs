@@ -50,4 +50,19 @@ impl Guardian {
             .status()
             .is_ok_and(|status| status.success())
     }
+
+    /// Record only PIDs observed from this test's private core. launchd may
+    /// restore its environment after exec, hiding the nonce from procargs.
+    #[allow(dead_code)] // This helper is also included by the managed test binary.
+    pub fn observe(&self, pids: &[i64]) {
+        assert!(
+            Command::new("/usr/bin/python3")
+                .args(["-B", SCRIPT, "observe"])
+                .arg(&self.root)
+                .args(pids.iter().map(ToString::to_string))
+                .status()
+                .is_ok_and(|status| status.success()),
+            "test_guardian_observation_failed"
+        );
+    }
 }

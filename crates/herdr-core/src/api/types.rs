@@ -248,6 +248,7 @@ pub struct RunParams {
     pub line: Option<String>,
     /// Initial size before the program starts. Omitted: the configured
     /// headless size (default 200 columns by 120 rows). Later viewers resize normally.
+    /// Cannot be combined with the persistent per-dimension cols/rows overrides.
     #[arg(skip)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<InitialSize>,
@@ -436,7 +437,8 @@ pub struct AttachParams {
     #[arg(skip)]
     #[serde(default)]
     pub resize_notifications: bool,
-    /// Scrollback lines to show first (main screen only).
+    /// Main-screen scrollback lines to replay, including the hidden primary
+    /// screen when attached on alternate. For marked viewers, also bounds later paints.
     #[arg(long, default_value_t = 0)]
     #[serde(default)]
     pub history: usize,

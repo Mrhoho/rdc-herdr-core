@@ -1737,16 +1737,8 @@
       }
     },
     {
-      "description": "Stop the core and its programs. Kept terminals remain pending and get new shells when the core next starts. Managed builds require an explicit owner token.",
-      "errors": [
-        {
-          "code": -32000,
-          "data": {
-            "kind": "managed_by_owner"
-          },
-          "message": "managed_by_owner"
-        }
-      ],
+      "description": "Stop the core and its programs. Kept terminals remain pending and get new shells when the core next starts.",
+      "errors": [],
       "name": "server.stop",
       "paramStructure": "by-name",
       "params": [],
@@ -2067,7 +2059,22 @@
           }
         },
         {
-          "description": "Initial size before the program starts. Omitted: the configured\nheadless size (default 200 columns by 120 rows). Later viewers resize normally.",
+          "description": "Initial and unowned rows (1-65535; persisted across core restarts; default: current headless rows).",
+          "name": "rows",
+          "required": false,
+          "schema": {
+            "description": "Initial and unowned rows (1-65535; persisted across core restarts; default: current headless rows).",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 1,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        {
+          "description": "Initial size before the program starts. Omitted: the configured\nheadless size (default 200 columns by 120 rows). Later viewers resize normally.\nCannot be combined with the persistent per-dimension cols/rows overrides.",
           "name": "size",
           "required": false,
           "schema": {
@@ -2079,7 +2086,7 @@
                 "type": "null"
               }
             ],
-            "description": "Initial size before the program starts. Omitted: the configured\nheadless size (default 200 columns by 120 rows). Later viewers resize normally."
+            "description": "Initial size before the program starts. Omitted: the configured\nheadless size (default 200 columns by 120 rows). Later viewers resize normally.\nCannot be combined with the persistent per-dimension cols/rows overrides."
           }
         },
         {
@@ -2576,12 +2583,12 @@
           }
         },
         {
-          "description": "Scrollback lines to show first (main screen only).",
+          "description": "Main-screen scrollback lines to replay, including the hidden primary\nscreen when attached on alternate. For marked viewers, also bounds later paints.",
           "name": "history",
           "required": false,
           "schema": {
             "default": 0,
-            "description": "Scrollback lines to show first (main screen only).",
+            "description": "Main-screen scrollback lines to replay, including the hidden primary\nscreen when attached on alternate. For marked viewers, also bounds later paints.",
             "format": "uint",
             "minimum": 0,
             "type": "integer"

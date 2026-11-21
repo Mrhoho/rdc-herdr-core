@@ -20,6 +20,33 @@ fn streaming_paint_matches_legacy_bytes_and_frozen_state() {
         assert_eq!(budget.used(), 0);
     }
 }
+
+#[test]
+fn colored_alternate_paint_preserves_primary_history_and_program_overrides() {
+    let mut source = Terminal::new(12, 4, 1 << 20);
+    source.set_palette(Some(&[(1, [1, 2, 3])])).unwrap();
+    source.write(b"one\r\ntwo\r\nthree\r\nfour\r\nfive\r\n\x1b]4;1;#123456\x07\x1b[31mPRIMARY");
+    source.write(b"\x1b[?1049hALT");
+    let budget = budget::Budget::new(32 << 20);
+    let snapshot = source.snapshot_budget(&budget).unwrap();
+    let mut frozen = Terminal::restore_budget(snapshot.as_slice(), &budget).unwrap();
+    let mut bytes = Vec::new();
+    frozen.paint_with_colors_to(100, &mut bytes).unwrap();
+    let mut viewer = Terminal::new(12, 4, 1 << 20);
+    viewer.set_color_defaults(&source.default_colors()).unwrap();
+    viewer.write(&bytes);
+    assert_eq!(viewer.screen_rows(), source.screen_rows());
+    assert_eq!(viewer.colors(), source.colors());
+    for terminal in [&mut source, &mut viewer] {
+        terminal.write(b"\x1b[?1049l");
+    }
+    assert_eq!(viewer.screen_rows(), source.screen_rows());
+    assert!(viewer.plain_text().starts_with("one\ntwo\n"), "hidden primary history is restored");
+    assert_eq!(viewer.colors(), source.colors());
+    drop(frozen);
+    drop(snapshot);
+    assert_eq!(budget.used(), 0);
+}
 #[test]
 fn frozen_paint_can_restore_an_unfinished_utf8_or_escape_sequence() {
     for (prefix, suffix) in [

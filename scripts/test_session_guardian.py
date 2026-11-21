@@ -217,6 +217,9 @@ def clean(record, allow_live=False):
         # Managed cleanup reuses Swift's CoreCleanupBarrier; fork cleanup first
         # uses server stop. Escalation applies ONLY to newly nonce-tagged tests.
         remaining = matching_processes(nonce) if spec.get('marked') else []
+        known = {i[0]: i for i in spec.get('observed', []) if alive(i)}
+        known.update({i[0]: i for i in remaining})
+        remaining = list(known.values())
         deadline = time.monotonic() + .5
         while ok and remaining and time.monotonic() < deadline:
             time.sleep(.02)
@@ -371,6 +374,26 @@ def main():
         register(json.load(sys.stdin))
     elif action == 'watch':
         watch(Path(sys.argv[2]), json.loads(sys.argv[3]))
+    elif action == 'observe':
+        # The registered owner explicitly reports PIDs obtained from its private
+        # core. Freeze their start times before a fixture removes its socket/root.
+        owner = instance(os.getppid())
+        group = BASE / hashlib.sha256(json.dumps(owner).encode()).hexdigest()[:24]
+        record = group / (hashlib.sha256(sys.argv[2].encode()).hexdigest()[:24] + '.json')
+        lease = locked(record.with_suffix('.lock'))
+        if lease is None:
+            raise ValueError('observation_busy')
+        try:
+            spec = read(record)
+            if spec['owner'] != owner:
+                raise ValueError('observation_owner_changed')
+            observed = [instance(int(pid)) for pid in sys.argv[3:]]
+            if any(i is None or i[1] != owner[1] or i[0] == owner[0] for i in observed):
+                raise ValueError('invalid_observed_process')
+            spec['observed'] = observed
+            write(record, spec)
+        finally:
+            os.close(lease)
     elif action == 'finish':
         owner = instance(os.getppid())
         group = BASE / hashlib.sha256(json.dumps(owner).encode()).hexdigest()[:24]

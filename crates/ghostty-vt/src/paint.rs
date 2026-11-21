@@ -124,11 +124,24 @@ impl Terminal {
     ) -> io::Result<()> {
         let (cols, rows) = self.size();
         let last = (cols.saturating_sub(1), rows.saturating_sub(1) as u32);
-        writer.write_all(
-            b"\x1b[!p\x1b[?2026l\x1b[?9l\x1b[?1000l\x1b[?1001l\x1b[?1002l\x1b[?1003l\x1b[?1004l\
+        if self.alt_screen() {
+            let budget =
+                self.allocator.as_ref().map(|a| a.budget().clone()).unwrap_or_else(|| budget::Budget::new(usize::MAX));
+            let snapshot = self.snapshot_budget(&budget)?;
+            let mut primary =
+                Self::restore_budget(snapshot.as_slice(), &budget).ok_or_else(|| io::Error::other("paint_limit"))?;
+            primary.write(b"\x18\x1b[?1049l");
+            primary.paint_impl(history, colors, writer)?;
+        } else {
+            writer.write_all(
+                b"\x1b[!p\x1b[?2026l\x1b[?9l\x1b[?1000l\x1b[?1001l\x1b[?1002l\x1b[?1003l\x1b[?1004l\
 \x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1016l\x1b[?2004l\x1b[?1l\x1b[?66l\x1b[?2031l\x1b[?2048l\x1b[=0;1u\
 \x1b[?1049l\x1b[?1047l\x1b[?47l\x1b[H\x1b[2J",
-        )?;
+            )?;
+        }
+        if self.alt_screen() {
+            writer.write_all(b"\x1b[?1049h\x1b[!p")?;
+        }
         if let Some(colors) = colors {
             colors.write(writer)?;
         }
@@ -143,9 +156,6 @@ impl Terminal {
                 }
                 writer.write_all(b"\x1b[H\x1b[2J")?;
             }
-        }
-        if self.alt_screen() {
-            writer.write_all(b"\x1b[?1049h")?;
         }
         if let Some(sel) = self.select(ffi::POINT_ACTIVE, (0, 0), last) {
             let mut filter = Strip { writer, held: Vec::new() };

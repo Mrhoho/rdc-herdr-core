@@ -120,7 +120,7 @@ pub(super) async fn start(
         None => {
             let (cols, rows) = settings.headless()?;
             (p.cols.unwrap_or(cols), p.rows.unwrap_or(rows))
-        },
+        }
     };
     // A caller on another machine has no folder here: home, then.
     let from_afar = p.caller.as_deref().is_some_and(|c| c.contains('/'));
@@ -177,15 +177,15 @@ pub(super) async fn start(
             rows,
             identity: identity.clone(),
         };
+        let mut screen = ghostty_vt::Terminal::new(cols, rows, settings.history_bytes());
+        screen.set_xtversion(&identity);
+        if let Some(display) = &p.display {
+            display.apply(&mut screen).map_err(|e| RpcError::new("unavailable", e.to_string(), "retry the run"))?;
+        }
         let id = st.reg.create(new, now_ms())?;
         let rec = st.reg.terminals.get_mut(&id).expect("just created");
         rec.headless_cols = p.cols;
         rec.headless_rows = p.rows;
-        let mut screen = ghostty_vt::Terminal::new(cols, rows, settings.history_bytes());
-        screen.set_xtversion(&identity);
-        if let Some(display) = &p.display {
-            display.apply(&mut screen);
-        }
         st.screens.insert(id, screen);
         let (env, scope) = terminal_env(core, id, &cwd, env);
         st.reg.terminals.get_mut(&id).expect("just created").scope = Some(scope);
