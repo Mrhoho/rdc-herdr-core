@@ -1,5 +1,9 @@
 # herdr-core (`hc`)
 
+> **Nearshell fork.** This is Nearshell's fork of [herdrdev/herdr-core](https://github.com/herdrdev/herdr-core),
+> not the upstream project. [docs/nearshell-build.md](docs/nearshell-build.md) describes what differs.
+> Issues with plain hc belong [upstream](https://github.com/herdrdev/herdr-core/issues).
+
 `hc` runs programs and coding agents in terminals that stay alive after you leave.
 Agents can start other agents, send them work, and hear back; you can attach to any terminal and take over.
 

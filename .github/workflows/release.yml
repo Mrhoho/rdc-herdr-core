@@ -25,6 +25,8 @@ env:
 
 jobs:
   build:
+    # Nearshell fork: upstream's release only (sign-windows and publish need build); see nearshell.yml.
+    if: github.repository == 'herdrdev/herdr-core'
     strategy:
       fail-fast: true
       matrix:
