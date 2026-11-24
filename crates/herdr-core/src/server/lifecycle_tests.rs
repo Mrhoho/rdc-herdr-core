@@ -24,6 +24,15 @@ fn fixture() -> (Arc<Core>, std::path::PathBuf, u32) {
     (core, root, id)
 }
 
+/// A subscription's heartbeat task keeps a clone of the core until the test's
+/// runtime ends, so dropping ours does not join the registry writer: wait for
+/// the snapshots already queued before removing the directory they land in.
+async fn remove_fixture(core: Arc<Core>, root: std::path::PathBuf) {
+    core.flush_saved().await.unwrap();
+    drop(core);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 // A current-thread executor plus an always-ready byte slice makes the old
 // probe deterministic: every RPC is queued, then EOF cleanup, then handlers.
 #[tokio::test]
@@ -79,8 +88,7 @@ async fn queued_attach_and_subscribe_cannot_outlive_eof() {
         assert_eq!((st.reg.terminals[&id].cols, st.reg.terminals[&id].rows), core.headless());
     }
     assert!(core.lock().reg.terminals[&id].is_live());
-    drop(core);
-    std::fs::remove_dir_all(root).unwrap();
+    remove_fixture(core, root).await;
 }
 
 #[tokio::test]
@@ -101,6 +109,5 @@ async fn registered_streams_and_unread_first_paint_are_reclaimed() {
     assert!(!core.subscribed(&core.lock(), &conn, channel));
     assert!(conn.outbox().next_frame().is_none());
     assert!(core.lock().reg.terminals[&id].is_live());
-    drop(core);
-    std::fs::remove_dir_all(root).unwrap();
+    remove_fixture(core, root).await;
 }
