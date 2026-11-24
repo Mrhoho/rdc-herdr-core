@@ -25,6 +25,11 @@ import uuid
 MARKER = 'NEARSHELL_TEST_SESSION_ID'
 BASE = Path('/var/tmp') / ('nearshell-test-guardian-' + str(os.getuid()))
 LIB = ctypes.CDLL('/usr/lib/libproc.dylib' if sys.platform == 'darwin' else None, use_errno=True)
+# A core's stop is bounded but not quick: kill escalation (3 s), each holder's
+# goodbye (6 s, draining its output backlog first), crash sweeps (6 s) and the
+# registry flush (10 s); the managed client waits 30 s for the service lock.
+# A flooding program on a loaded runner takes seconds of that. Never give up first.
+STOP_SECONDS = 40
 
 
 def instance(pid):
@@ -213,7 +218,7 @@ def clean(record, allow_live=False):
                 # Crash/ambiguous reply must not cause a second stop on sweep.
                 spec['attempted'] = True
                 write(record, spec)
-                ok = invoke(command, spec['environment'])
+                ok = invoke(command, spec['environment'], 2 * STOP_SECONDS)
         # Managed cleanup reuses Swift's CoreCleanupBarrier; fork cleanup first
         # uses server stop. Escalation applies ONLY to newly nonce-tagged tests.
         remaining = matching_processes(nonce) if spec.get('marked') else []
@@ -416,7 +421,7 @@ def main():
             scoped = dict(env, HC_SOCKET=str(sock))
             if not invoke([binary, 'server', 'status'], scoped, 2):
                 ok = False
-            if not invoke([binary, 'server', 'stop'], scoped, 3):
+            if not invoke([binary, 'server', 'stop'], scoped, STOP_SECONDS):
                 ok = False
         if not ok:
             raise ValueError('stop_failed')
@@ -428,7 +433,7 @@ def main():
         try:
             env = dict(PATH='/usr/bin:/bin', HOME=str(root), NEARSHELL_HC_TEST_ROOT=str(root))
             if (root / 'config/herdr-core/config.toml').exists():
-                if not invoke([binary, '--owner-token', token, 'server', 'stop'], env, 5):
+                if not invoke([binary, '--owner-token', token, 'server', 'stop'], env, STOP_SECONDS):
                     raise ValueError('stop_failed')
         finally:
             os.close(lease)
