@@ -88,7 +88,12 @@ impl Completion {
             std::thread::sleep(Duration::from_millis(5));
         };
         completion_result(transport, departed)
-        // Drop the service lease before a subsequent owner start.
+        // Drop releases the service lease before a subsequent owner start.
+    }
+}
+impl Drop for Completion {
+    fn drop(&mut self) {
+        platform::unlock(&self.service);
     }
 }
 
