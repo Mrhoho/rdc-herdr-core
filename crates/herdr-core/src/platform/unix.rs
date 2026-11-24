@@ -184,6 +184,14 @@ pub fn try_shared_lock(file: &File) -> bool {
     unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) == 0 }
 }
 
+/// Releases this open file's lock now. Closing alone releases it only when the
+/// last descriptor goes, and a child forked by another thread holds a copy
+/// until its exec.
+#[cfg(feature = "managed")]
+pub fn unlock(file: &File) {
+    unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
+}
+
 pub fn make_executable(path: &Path) -> io::Result<()> {
     std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o755))
 }
