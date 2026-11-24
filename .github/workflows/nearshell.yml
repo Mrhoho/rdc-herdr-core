@@ -1,0 +1,187 @@
+# Nearshell fork only (ci.yml runs upstream's checks for our branches too):
+# the managed nhc contract suite on macOS, and release-profile builds of what
+# the fork ships, kept as short-lived workflow artifacts. Nothing here signs
+# with a certificate, notarizes, publishes or creates a GitHub release; the
+# nhc build is ad-hoc signed with a CI-only identity. See docs/nearshell-build.md.
+name: nearshell
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Same rule as ci.yml: only superseded PR runs share a group.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  RUST_TOOLCHAIN: 1.95.0
+  CARGO_PROFILE_DEV_DEBUG: "1"
+  CARGO_PROFILE_TEST_DEBUG: "1"
+  # Caches from the default branch are visible to every branch and PR.
+  SAVE_CACHES: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+  HC_TEST_WATCHDOG_S: "120"
+  HC_TEST_SLOW_RUNNER: "1"
+
+jobs:
+  # `just managed-check` plus the release driver guards from `just lint`.
+  managed:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy
+          targets: aarch64-apple-darwin
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.16.0
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: aarch64-apple-darwin-managed
+          cache-workspace-crates: true
+          cache-bin: false
+          save-if: ${{ env.SAVE_CACHES }}
+      - name: Release driver guards
+        run: python3 -B -m unittest discover -s scripts -p test_managed_release.py
+      # What `just managed-check` runs: default-build hc fixture, managed-test
+      # clippy, lib tests, and tests/managed.rs including the fixture test.
+      - name: Managed contract suite
+        run: sh scripts/check-managed.sh
+        env:
+          # ci.yml's macOS thread count: 3 cores, terminals keep their timing.
+          RUST_TEST_THREADS: "2"
+
+  # Default flavor (hc) for the machines nhc connects to, as release.yml builds it.
+  build:
+    name: build (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x86_64, target: x86_64-unknown-linux-musl, runner: ubuntu-latest }
+          - { name: linux-aarch64, target: aarch64-unknown-linux-musl, runner: ubuntu-22.04-arm }
+          - { name: windows-x86_64, target: x86_64-pc-windows-msvc, runner: windows-2025 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 75
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ matrix.target }}
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.16.0
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: ${{ matrix.target }}-release
+          cache-workspace-crates: true
+          cache-bin: false
+          save-if: ${{ env.SAVE_CACHES }}
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }} -p herdr-core
+      - name: Pack
+        if: runner.os != 'Windows'
+        run: |
+          bin=target/${{ matrix.target }}/release/herdr-core
+          "$bin" --version
+          file "$bin" | grep -q 'static' || { file "$bin"; echo "not static"; exit 1; }
+          mkdir -p dist
+          sh scripts/package "$bin" dist/herdr-core-ci-${{ matrix.name }}.tar.gz
+      # As release.yml: the exe, Microsoft's ConPTY and the notices.
+      - name: Pack (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $bin = "target/${{ matrix.target }}/release/herdr-core.exe"
+          & $bin --version
+          if ($LASTEXITCODE) { throw "it does not run" }
+          $text = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($bin)).ToLower()
+          foreach ($dll in "vcruntime140", "msvcp140", "api-ms-win-crt-") { if ($text.Contains($dll)) { throw "herdr-core.exe imports $dll" } }
+          New-Item -ItemType Directory -Force stage/THIRD-PARTY-NOTICES, dist | Out-Null
+          Copy-Item $bin stage/
+          Copy-Item LICENSE stage/
+          Copy-Item crates/herdr-core/THIRD-PARTY-NOTICES stage/THIRD-PARTY-NOTICES/herdr-core.txt
+          scripts/fetch-conpty.ps1 -Dest stage
+          Copy-Item distribution/windows/* stage/THIRD-PARTY-NOTICES/
+          tar -a -cf dist/herdr-core-ci-${{ matrix.name }}.zip -C stage herdr-core.exe conpty LICENSE THIRD-PARTY-NOTICES
+          if ($LASTEXITCODE) { throw "zip failed" }
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: herdr-core-ci-${{ matrix.name }}
+          path: dist/herdr-core-ci-${{ matrix.name }}.*
+          if-no-files-found: error
+          retention-days: 7
+
+  # Managed nhc through scripts/build-managed.py: universal, ad-hoc signed, with
+  # a CI-only identity no App accepts as a release (dev config, CI bundle ID).
+  build-managed:
+    runs-on: macos-15
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.16.0
+      # The driver needs its Cargo cache outside the source checkout.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: macos-managed-release
+          workspaces: ". -> ../nhc-target"
+          cache-bin: false
+          save-if: ${{ env.SAVE_CACHES }}
+      - name: Build
+        run: |
+          python3 -B scripts/build-managed.py --commit "$(git rev-parse HEAD)" \
+            --patchset ci-unreleased --release-seq 1 --config dev --bundle-id com.nearshell.ci.agent \
+            --identity - --target-dir ../nhc-target --output "$RUNNER_TEMP/nhc-ci"
+      # The driver ran the native arm64 slice; run the x86_64 slice under Rosetta.
+      - name: Check
+        run: |
+          out="$RUNNER_TEMP/nhc-ci"
+          cat "$out/manifest.json"
+          arm=$(arch -arm64 "$out/nhc" build-info --json)
+          intel=$(arch -x86_64 "$out/nhc" build-info --json)
+          [ "$arm" = "$intel" ] || { echo "slices disagree: $arm / $intel"; exit 1; }
+          mkdir -p dist
+          cp LICENSE crates/herdr-core/THIRD-PARTY-NOTICES "$out/"
+          tar -czf dist/nhc-ci-macos-universal-adhoc.tar.gz -C "$out" nhc manifest.json LICENSE THIRD-PARTY-NOTICES
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nhc-ci-macos-universal-adhoc
+          path: dist/nhc-ci-macos-universal-adhoc.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  # One stable check name for branch protection.
+  nearshell-ok:
+    needs: [managed, build, build-managed]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: '[ "${{ needs.managed.result }}" = success ] && [ "${{ needs.build.result }}" = success ] && [ "${{ needs.build-managed.result }}" = success ]'
