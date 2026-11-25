@@ -3,6 +3,7 @@
 use super::*;
 use crate::api::{MachineAddParams, MachineParams, MachineRenameParams};
 use crate::branding::COMMAND as CLI_NAME;
+use crate::machines::Reach;
 
 #[derive(Subcommand)]
 pub(super) enum MachineCmd {
@@ -30,6 +31,95 @@ fn linger_user(m: &Value) -> String {
     }
 }
 
+/// Said once a machine is reached: its programs stop at logout, and how to fix it.
+fn logout_warning(m: &Value) -> String {
+    let name = m["name"].as_str().unwrap_or_default();
+    match m["keeps_running_after_logout"] == false {
+        true => format!(
+            "\nwarning: programs on {name} stop when your last login there ends. To fix it, run this on {name} once: sudo loginctl enable-linger -- {}",
+            linger_user(m)
+        ),
+        false => String::new(),
+    }
+}
+
+type Call<'a> = &'a dyn Fn(&str, Value) -> Result<Value, RpcError>;
+
+/// Copies this hc there, then adds the machine.
+#[cfg(not(feature = "nearshell"))]
+fn install_and_add(paths: &Paths, reach: Reach, p: &MachineAddParams, call: Call) -> Result<Value, RpcError> {
+    let version = crate::machines::install(paths, reach, p.session.as_deref())?;
+    eprintln!("{} now has {version}", reach.target);
+    call("machine.add", to(p))
+}
+
+/// Puts this hub's remote core there, then adds the machine: it must answer
+/// as the build installed.
+#[cfg(feature = "nearshell")]
+fn install_and_add(paths: &Paths, reach: Reach, p: &MachineAddParams, call: Call) -> Result<Value, RpcError> {
+    let landed = crate::machines::deliver(paths, reach)?;
+    eprintln!("{}: {}", reach.target, crate::machines::summary(&landed));
+    let m = call("machine.add", to(p))?;
+    match m["build"] == json!(landed.build) {
+        true => Ok(m),
+        false => Err(unverified(m["name"].as_str().unwrap_or_default(), &format!("answers as {}", m["build"]))),
+    }
+}
+
+/// Copies this hc there and restarts hc there.
+#[cfg(not(feature = "nearshell"))]
+fn update(paths: &Paths, name: &str, m: &Value, _: Call) -> Result<Out, RpcError> {
+    let version = crate::machines::install(paths, reach_of(m), m["session"].as_str())?;
+    let human = format!("{name} now runs {version}; its terminals kept running");
+    Ok(Out { json: json!({"machine": name, "version": version}), human })
+}
+
+/// Puts this hub's remote core there (restarting the one running there), then
+/// dials it until it answers as that build. A machine held for a newer, a
+/// conflicting or an incompatible core is left as it is.
+#[cfg(feature = "nearshell")]
+fn update(paths: &Paths, name: &str, m: &Value, call: Call) -> Result<Out, RpcError> {
+    use crate::machines::Refusal;
+    let state = m["state"].as_str().unwrap_or_default();
+    if let Some(refusal) = Refusal::named(state).filter(|r| *r != Refusal::NeedsUpdate) {
+        return Err(refusal.refused(name, m["why"].as_str().unwrap_or(state)));
+    }
+    let landed = crate::machines::deliver(paths, reach_of(m))?;
+    let build = json!(landed.build);
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let view = loop {
+        let view = call("machine.connect", json!({"machine": name}))?;
+        let state = view["state"].as_str().unwrap_or_default();
+        if state == "connected" && view["build"] == build {
+            break view;
+        }
+        // Held again, or a login only a person can give: it will not come back by waiting.
+        if Refusal::named(state).is_some() || state == "needs_login" || std::time::Instant::now() > end {
+            let why = view["why"].as_str().map(|w| format!(": {w}")).unwrap_or_default();
+            return Err(unverified(name, &format!("is {state}{why}")));
+        }
+        // Its old line may not have dropped yet, or it is being dialled.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    };
+    let mut human = format!("{name}: {}", crate::machines::summary(&landed));
+    if landed.restarted {
+        human.push_str("; its terminals kept running");
+    }
+    let mut json = serde_json::to_value(&landed).expect("result serializes");
+    (json["machine"], json["state"]) = (name.into(), view["state"].clone());
+    Ok(Out { human: human + &logout_warning(&view), json })
+}
+
+/// Installed there, but the hub does not reach that build.
+#[cfg(feature = "nearshell")]
+fn unverified(name: &str, what: &str) -> RpcError {
+    RpcError::new(
+        "install_unverified",
+        format!("{name} {what} after its install"),
+        format!("see `{CLI_NAME} machine ls`; `{CLI_NAME} machine update {name}` tries again"),
+    )
+}
+
 /// Which Nearshell build runs there, for `machine ls`: ` build 5 1a2b3c4d5e6f p2`.
 fn build_there(build: &Value) -> String {
     match (cfg!(feature = "nearshell"), build["commit"].as_str()) {
@@ -50,8 +140,8 @@ fn at_terminal() -> bool {
 }
 
 /// How a listed machine is reached.
-fn reach_of(m: &Value) -> crate::machines::Reach<'_> {
-    crate::machines::Reach { target: m["target"].as_str().unwrap_or_default(), via: m["via"] == true }
+fn reach_of(m: &Value) -> Reach<'_> {
+    Reach { target: m["target"].as_str().unwrap_or_default(), via: m["via"] == true }
 }
 
 pub(super) fn machine(
@@ -104,21 +194,13 @@ pub(super) fn machine(
                             return Err(e);
                         }
                     }
-                    let version = crate::machines::install(paths, reach, p.session.as_deref())?;
-                    eprintln!("{target} now has {version}");
-                    call("machine.add", to(&p))?
+                    install_and_add(paths, reach, &p, &call)?
                 }
                 other => other?,
             };
-            let mut human =
+            let human =
                 format!("added {}: {} answers, {CLI_NAME} {}", s(&m["name"]), s(&m["target"]), s(&m["version"]));
-            if m["keeps_running_after_logout"] == false {
-                human.push_str(&format!(
-                    "\nwarning: programs on {} stop when your last login there ends. To fix it, run this on {} once: sudo loginctl enable-linger -- {}",
-                    s(&m["name"]), s(&m["name"]), linger_user(&m)
-                ));
-            }
-            Out { json: m, human }
+            Out { human: human + &logout_warning(&m), json: m }
         }
         MachineCmd::Ls => {
             let r = call("machine.list", json!({}))?;
@@ -179,9 +261,7 @@ pub(super) fn machine(
                     format!("see `{CLI_NAME} machine ls`"),
                 ));
             };
-            let version = crate::machines::install(paths, reach_of(&m), m["session"].as_str())?;
-            let human = format!("{} now runs {version}; its terminals kept running", p.machine);
-            Out { json: json!({"machine": p.machine, "version": version}), human }
+            update(paths, &p.machine, &m, &call)?
         }
         MachineCmd::Rename(p) => {
             let m = call("machine.rename", to(&p))?;

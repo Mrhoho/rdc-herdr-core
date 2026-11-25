@@ -1,6 +1,6 @@
 # Nearshell 构建与 CLI 契约
 
-状态：A1–A5 已实现；Linux 远端构建（寻址、生命周期、程序环境、`build-remote.py`）已实现；拨号与版本校验已实现，远端安装尚未实现（安装入口仍返回 `managed_distribution`）。发行前须通过锁定源码构建与组 A 契约矩阵。日期：2026-11-25。
+状态：A1–A5 已实现；Linux 远端构建（寻址、生命周期、程序环境、`build-remote.py`）已实现；拨号与版本校验已实现；远端安装与更新（`remote_payloads`、`machine add --install`、`machine update`）已实现，由 Linux 测试与 macOS 脚本化对端验证，尚未在真实 Linux 主机上经真实 ssh 验证。发行前须通过锁定源码构建与组 A 契约矩阵。日期：2026-11-25。
 
 目标：保持默认构建的上游命令与寻址行为，提供独立的 Nearshell 分发身份和私有路径。连接生命周期修复及附加的 build 字段适用于所有构建。
 
@@ -38,7 +38,7 @@ HC_SESSION、HC_SOCKET 只要存在（包括空值）就返回 `managed_address_
 
 ## 命名与隔离
 
-Nearshell CLI 的版本前缀、help、skill、固定提示与内置模板说明使用 `nhc`。用户模板、程序输出、协议标签与数据键保持原值。远端拨号只用[绝对路径](#机器拨号与版本校验)，不回退 `hc` 或 `herdr-core`；上游下载器及向上游安装目录复制二进制的功能返回 `managed_distribution`，防止写入用户自装副本；`update` 不带 `--from` 在任何动作之前就返回它（上游会先重启较旧的 core）。A2 的 owner 鉴权、禁止自启及程序环境契约见下文。
+Nearshell CLI 的版本前缀、help、skill、固定提示与内置模板说明使用 `nhc`。用户模板、程序输出、协议标签与数据键保持原值。远端拨号只用[绝对路径](#机器拨号与版本校验)，不回退 `hc` 或 `herdr-core`；上游下载器及向上游安装目录复制二进制的功能返回 `managed_distribution`，防止写入用户自装副本；`update` 不带 `--from` 在任何动作之前就返回它（上游会先重启较旧的 core）。远端构建的 `update`（带不带 `--from` 都一样）同样在任何动作之前返回 `managed_distribution`：远端 core 只经 hub 的[安装](#机器安装与更新)替换。A2 的 owner 鉴权、禁止自启及程序环境契约见下文。
 
 所有 Nearshell 构建使用自己的名字：systemd 单元 `nearshell-<serve|hold>-<随机>` 与关机守护单元 `nearshell-shutdown-<hash>.service`，“没有 systemd 用户管理器”的提示以 `nhc:` 开头，替换二进制的临时文件为 `.nhc.new.<pid>`，远端“未安装”标记为 `the Nearshell remote core is not installed here`，`hc_missing` 的提示指向在 Nearshell 里添加机器。默认构建保持 `hc-…`、`.herdr-core.new.*` 与上游文案。
 
@@ -82,13 +82,13 @@ run、keep（替换 shell）与 exec 走上游的 `child_env` 与 exec 环境，
 
 ### 构建制品
 
-`scripts/build-remote.py` 与 `build-managed.py` 用同一套干净快照与身份参数（commit、patchset、release-seq、config、bundle-id），另须指定目标（`x86_64-unknown-linux-musl` 或 `aarch64-unknown-linux-musl`），Cargo 缓存目录可选：
+`scripts/build-remote.py` 与 `build-managed.py` 用同一套干净快照与身份参数（commit、patchset、release-seq、config、bundle-id），另须指定目标（`x86_64-unknown-linux-musl` 或 `aarch64-unknown-linux-musl`；目标参数可重复，同一输出目录放多个目标），Cargo 缓存目录可选：
 
 ```sh
-python3 -B scripts/build-remote.py --commit "$(git rev-parse HEAD)" --patchset <patchset> --release-seq <n> --config dev --bundle-id <bundle-id> --target aarch64-unknown-linux-musl --output <新目录>
+python3 -B scripts/build-remote.py --commit "$(git rev-parse HEAD)" --patchset <patchset> --release-seq <n> --config dev --bundle-id <bundle-id> --target x86_64-unknown-linux-musl --target aarch64-unknown-linux-musl --output <新目录>
 ```
 
-产出 `<输出>/nhc-<target>` 与 `manifest.json`，其中 `entry` 为 `{target, file, bytes, sha256, build}`，另记源码 commit、子模块、驱动脚本 hash、工具链与 profile。macOS 上交叉编译、Linux 上原生构建用同一条命令：release profile（strip），rustc 自带的 `rust-lld` 链接，sha1 GNU build id，Cargo home 重映射为 `/nearshell/cargo`；工作区路径本来就是相对路径，因此同一 commit 在同一种主机上换源码目录构建，字节相同。macOS 交叉产物与 Linux 原生产物不保证逐字节相同（两边 `rust-lld` 写入的版本注释与字符串段顺序不同），所以制品只按各自 manifest 的 `sha256` 认定，不跨主机比对。能在本机运行的目标（同架构 Linux）由脚本执行 `build-info --json` 核对；交叉产物的 `build` 按构建参数写入，`executed:false`，真实身份由安装时的候选二进制报告。CI 的 `nearshell.yml` 在 Linux runner 上用 CI 身份原生构建两个目标，`remote` 任务运行 `scripts/check-remote.sh`。
+产出每个目标的 `<输出>/nhc-<target>` 与一个 `manifest.json`。输出目录就是 hub 的 [`remote_payloads`](#载荷目录)，格式见该节；manifest 另记源码 commit、子模块、驱动脚本 hash、工具链与 profile。macOS 上交叉编译、Linux 上原生构建用同一条命令：release profile（strip），rustc 自带的 `rust-lld` 链接，sha1 GNU build id，Cargo home 重映射为 `/nearshell/cargo`；工作区路径本来就是相对路径，因此同一 commit 在同一种主机上换源码目录构建，字节相同。macOS 交叉产物与 Linux 原生产物不保证逐字节相同（两边 `rust-lld` 写入的版本注释与字符串段顺序不同），所以制品只按各自 manifest 的 `sha256` 认定，不跨主机比对。能在本机运行的目标（同架构 Linux）由脚本执行 `build-info --json` 核对；交叉产物的 `build` 按构建参数写入，`executed:false`，真实身份由安装时的候选二进制报告。CI 的 `nearshell.yml` 在 Linux runner 上用 CI 身份原生构建两个目标，打包前核对 manifest 只有本目标一项、`executed:true` 且 `sha256` 与产物一致；`remote` 任务运行 `scripts/check-remote.sh`。
 
 ## 机器：拨号与版本校验
 
@@ -141,7 +141,7 @@ sh -c 'p="$HOME/.local/share/nearshell/<bundle-id>/bin/nhc"; [ -x "$p" ] || { ec
 
 ### CLI
 
-Nearshell 构建的 `nhc machine add` 只在 `hc_missing` 和 `needs_update` 时进入安装（上游是 `hc_missing` 与 `incompatible`）；本步安装入口仍返回 `managed_distribution`。`machine_newer`、`build_conflict`、`incompatible`、`unsupported_platform` 不进入安装，直接输出错误与提示：
+Nearshell 构建的 `nhc machine add` 只在 `hc_missing` 和 `needs_update` 时进入[安装](#机器安装与更新)（上游是 `hc_missing` 与 `incompatible`），且要带 `--install`。`machine_newer`、`build_conflict`、`incompatible`、`unsupported_platform` 不进入安装，直接输出错误与提示：
 
 | 错误码 | 提示（hint） |
 |---|---|
@@ -154,8 +154,85 @@ Nearshell 构建的 `nhc machine add` 只在 `hc_missing` 和 `needs_update` 时
 ### 测试
 
 - 单元：拨号命令字符串、预期远端 config 的推导与幂等、判定函数各分支（含 config 不符与缺少 `build`）、旧记录读取、`machine ls` 的人读输出。
-- macOS（`tests/managed_machines.rs`）：managed hub 经 `--via` 与脚本化的对端，在本机存在的 sh、bash、zsh、dash、ksh、csh、tcsh 作登录 shell 时，未安装得到 `hc_missing`，对端被以 `connect` 参数、无 `HC_SESSION`/`HC_SOCKET` 执行；对端身份更新、同序号不同 commit、managed config、缺少 `build`、协议代际不符各得到对应错误码；CLI 只在未安装时进入安装。
+- macOS（`tests/managed_machines.rs`）：managed hub 经 `--via` 与脚本化的对端，在本机存在的 sh、bash、zsh、dash、ksh、csh、tcsh 作登录 shell 时，未安装得到 `hc_missing`，对端被以 `connect` 参数、无 `HC_SESSION`/`HC_SOCKET` 执行；对端身份更新、同序号不同 commit、managed config、缺少 `build`、协议代际不符各得到对应错误码；CLI 只在未安装时进入安装（未配置载荷时得到 `remote_payloads_unset`）。
 - Linux（`tests/remote_machines.rs`）：远端测试构建作 hub，经假 ssh（对端登录环境导出 `HC_SESSION`/`HC_SOCKET`）与 `--via` 连上同一构建；未安装只拨一次；Windows 探测返回 `unsupported_platform`；对端换成无身份或另一代际后机器停在对应状态、不自动重拨、`machine.connect` 才重拨。`check-remote.sh` 另外冻结四个身份不同的测试构建（同一 target 目录，每个只重编 herdr-core），被忽略的矩阵测试用它们覆盖 `needs_update`、`machine_newer`、两种 `build_conflict` 及各自的不重拨与恢复。
+
+## 机器：安装与更新
+
+Nearshell 构建（managed 与远端构建当 hub）用自己的载荷目录给 Linux 机器装远端 core：不下载、不复制 hub 自己的二进制、不写 `~/.local/bin`、不建 `hc` 链接。默认构建的 `--install` 与 `machine update` 保持上游。hub 侧判定在 `crates/herdr-core/src/machines/payload.rs`，IO 在 `machines/deliver.rs`；对端落位在 `crates/herdr-core/src/landing.rs`。
+
+### 载荷目录
+
+hub 的 config 写 `remote_payloads = "<绝对路径>"`（只有 Nearshell 构建读这个键，默认构建忽略）。目录里是 `build-remote.py` 的输出：
+
+```json
+{"schemaVersion": 2,
+ "entries": [{"target": "aarch64-unknown-linux-musl", "file": "nhc-aarch64-unknown-linux-musl",
+              "bytes": 0, "sha256": "<64 位小写 hex>", "build": {"commit": "…", "patchset": "…", "releaseSeq": 0, "config": "…"},
+              "executed": false}],
+ "source": {}, "buildDriverSha256": {}, "toolchain": {}, "profile": {}}
+```
+
+hub 只读 `schemaVersion`、`entries` 的 `target`、`file`、`bytes`、`sha256`、`build`，其余字段忽略。每个目标至多一项；`file` 必须是 manifest 旁边的普通文件名（不含 `/`、`\`、控制字符，不以 `.` 开头）。
+
+### 安装与更新的步骤
+
+`nhc machine add <target> --install`（未安装或 `needs_update`）与 `nhc machine update <name>` 走同一条路径：
+
+1. hub 侧检查，任何一项失败都不向对端发送字节：正在运行的 hub core 的 `server.status.build` 必须等于这个 CLI 的 `build_info()`；`remote_payloads` 已配置且为绝对路径；manifest 可读且格式正确。
+2. 在对端执行 `uname -sm`，只接受 Linux 且 `uname -m` 为 `x86_64`、`amd64`（→ `x86_64-unknown-linux-musl`）或 `aarch64`、`arm64`（→ `aarch64-unknown-linux-musl`）；Windows 照拨号返回 `unsupported_platform`，其他系统或架构也返回 `unsupported_platform`。
+3. 取该目标的项：`build` 必须等于本 CLI 身份的预期远端版本（`config` 为[预期的远端 config](#版本校验)，其余字段相同）；文件字节数与 sha256 必须与 manifest 一致。
+4. 经 ssh 或 `--via` 的 stdin 发送文件，对端执行（`N` 为字节数，`<hex>` 为 manifest 中 `build` 的 JSON 的 hex 编码）：
+
+```sh
+sh -c 'umask 077; unset HC_SESSION HC_SOCKET; d="$HOME/.local/share/nearshell/<bundle-id>/bin"; mkdir -p "$d" || exit 2; t="$d/.nhc.new.$$"; c() { rm -f "$t"; }; trap c EXIT; trap "exit 1" HUP INT TERM; head -c N > "$t"; [ $(($(wc -c < "$t"))) -eq N ] || { echo "the copy arrived incomplete" >&2; exit 3; }; chmod 700 "$t" && "$t" --json install --from "$t" --expect <hex>'
+```
+
+   这一行不含单引号与反斜杠，在 sh、bash、zsh、dash、ksh、csh、tcsh 作登录 shell 时都按同一语义执行；字节数不足以 3 退出，任何结果下临时文件都被删除。
+5. 对端的隐藏子命令 `nhc install --from <临时文件> --expect <hex>`（只在远端构建里存在）：`--from` 必须是它自己、位于 `<根>/bin/` 且名字以 `.nhc.new.` 开头；自身身份必须等于 `nhc install … --expect <hex>` 给出的身份；在 `<根>/install.lock` 上取排他 flock（并发安装排队）；删除 pid 已不存在且超过 60 秒未修改的 `.nhc.new.<pid>`；按下表决定是否替换；替换时原子 rename 到 `<根>/bin/nhc`；正在运行的 core 若不是这个身份，经 `server.restart`（终端留在 holder 里）重启到 `<根>/bin/nhc`，再以 `server status` 核对身份。输出 `{build, was, replaced, restarted}`。
+6. hub 核对输出的 `build` 等于 manifest 项的 `build`，然后重拨：`add` 登记的机器必须报告这个 `build`；`update` 每 200 ms 调一次 `machine.connect`，30 秒内必须成为 `connected` 且 `build` 为新身份。
+
+对端已装的 `<根>/bin/nhc`（以 `build-info --json` 读取，缺失或无法运行视为未装）与正在运行的 core 各自按拨号的判定比较，不支持 `--force`：
+
+| 对端已装或正在运行 | 结果 |
+|---|---|
+| 没有，或无法运行 | 安装 |
+| 预期 config，`releaseSeq` 更小 | 替换（更新） |
+| 与本副本相同 | 不替换；运行中的 core 不是这个身份时仍重启到它 |
+| 预期 config，`releaseSeq` 更大 | `machine_newer` |
+| 同序号不同 `commit`/`patchset`，或 config 不同 | `build_conflict` |
+
+`nhc machine update <name>` 对状态为 `machine_newer`、`build_conflict`、`incompatible` 的机器在发送前就返回同名错误码，消息为 `<name>: <why>`，提示同拨号。人读输出：`<target>: installed its remote core (release M)`（`add` 写在 stderr）、`<name>: updated its remote core from release N to M`、`<name>: its remote core is already current (release M)`；重启过 core 时附 `; its terminals kept running`。`--json` 输出 `{build, was, replaced, restarted, machine, state}`。
+
+登出后保留：远端构建沿用上游的 linger 处理（core 在 systemd 下启动时尝试 `loginctl --no-ask-password enable-linger`，结果出现在 `hello` 与 `server.status` 的 `keeps_running_after_logout`、`logout_linger_user`），不另设机制；`machine add` 与 `machine update` 在对端不能保留时都输出同一条 `sudo loginctl enable-linger -- <user>` 警告。
+
+### 错误码
+
+| 错误码 | 消息 | 提示 |
+|---|---|---|
+| `core_build_mismatch` | `this core runs <描述\|no build identity>, but this nhc is <描述>` | managed：`restart the core onto this build (Nearshell does when it updates), then retry`；远端构建：``restart the core onto this build (`nhc server restart`), then retry`` |
+| `remote_payloads_unset` | `no remote_payloads directory is configured` | `set remote_payloads = "<directory>" in <config>` |
+| `remote_payloads_invalid` | `remote_payloads "<路径>" is not an absolute path`；`<目录>/manifest.json: <原因>`，原因为 `schemaVersion <n>, this build reads 2`、`unknown target "<t>"`、`two entries for <t>`、`file "<f>" is not a plain name beside the manifest`、`sha256 of <f> is not 64 lowercase hex digits` 或 JSON 解析错误 | `fix it in <config>`；`use a payload directory written by scripts/build-remote.py` |
+| `remote_payloads_unreadable` | `<目录>/manifest.json: <IO 错误>` | `check remote_payloads in <config>` |
+| `remote_payload_no_target` | `<目录> has no remote core for <target>` | `add one built for <target> with scripts/build-remote.py` |
+| `remote_payload_build` | `<file> is <描述>, not <描述>`（对端核对自身身份时 `<file>` 为 `this copy`） | `use the remote cores built with this Nearshell` |
+| `remote_payload_mismatch` | `<文件>: missing or unreadable`、`<文件>: <n> bytes, the manifest says <m>`、`<文件>: sha256 <x>, the manifest says <y>` | `the payload directory is damaged: write it again with scripts/build-remote.py` |
+| `unsupported_platform` | `<machine> runs <os> <arch>, which Nearshell does not support yet` | `add a Linux machine` |
+| `install_failed` | `on <machine>: <对端 stderr 最后一行>`（如 `the copy arrived incomplete`），或 `on <machine>: the install ended without a word`、`the remote core gave no install result`；对端：`cannot open install.lock: …`、`cannot lock install.lock: …`、`cannot put it at <路径>: …` | `nothing was changed there`（`uname` 失败）；`retry; the remote core there is replaced only by a whole copy that checked itself`；对端：`retry; nothing is replaced unless the install says so` |
+| `machine_newer` | 对端：`on <machine>: a newer Nearshell remote core is here (release I; this copy: release C)`；`update`：`<name>: <why>` | `update Nearshell on this Mac` |
+| `build_conflict` | 对端：`on <machine>: the remote core here is built as <config>, not <config>` 或 `on <machine>: another build of release N is here (<commit12> <patchset>; this copy: …)`；`update`：`<name>: <why>` | 同拨号 |
+| `incompatible` | `update`：`<name>: <why>` | 同拨号 |
+| `install_unverified` | `on <machine>: the remote core reports <描述>`；对端：`installed, but after its restart the core here runs <描述\|no core>`；hub：`<name> answers as <build> after its install`、`<name> is <state>[: <why>] after its install` | `its payload <file> says <描述>; write the payloads again`；``check `nhc server status` there; an update retries the restart``；``see `nhc machine ls`; `nhc machine update <name>` tries again`` |
+| `invalid_params` | `install --from takes this nhc itself, sent to <bin> under a temp name`、`the --expect value is not a build identity` | — |
+| `managed_distribution` | 远端构建的 `update`；上游安装器 `machines::install` | 不变 |
+
+`<描述>` 为 `release <n> (<commit 前 12 位> <patchset>, <config>)`。对端返回的 JSON 错误由 hub 原样转发错误码与提示，消息前加 `on <machine>: `。
+
+### 测试
+
+- 单元：manifest 校验（格式版本、未知或重复目标、文件名、sha256 形状、忽略多余字段）、目标映射、载荷选择与字节核对、安装命令文本（无单引号与反斜杠、`umask 077`、临时名）、对端结果解析、期望身份的编码往返；对端替换判定与陈旧临时文件判定。
+- macOS（`tests/managed_machines.rs`）：managed hub 经 `--via` 与脚本化对端（假 `uname` 报 `Linux aarch64`，载荷是模拟落位的脚本）：各种载荷错误在发送前拒绝且对端无文件；本机 `uname` 得到 `unsupported_platform`；安装后对端只有 `nhc`、字节一致、以 `nhc --json install --from <bin>/.nhc.new.<pid> --expect <hex>` 的参数执行；`machine update` 重拨成 `connected`；安装命令在本机存在的各登录 shell 下完整副本落位、缺一字节以 3 退出且不留文件。`tests/managed.rs` 确认上游安装器仍返回 `managed_distribution`，Nearshell 安装在未配置载荷时返回 `remote_payloads_unset`。
+- Linux（`tests/remote_install.rs`，经 `check-remote.sh`）：远端测试构建作 hub，经假 ssh 与 `--via`：载荷错误、`unsupported_platform`、陈旧临时文件清理、空账户安装（模式 0700、不写 `~/.local/bin`）、已是最新、损坏副本被替换且终端保留、短流以 3 退出、`update --from` 被拒；被忽略的矩阵测试用冻结的四个身份覆盖 hub CLI 与运行中 core 不符、旧版到新版更新且终端进程不变、降级与两种 `build_conflict` 拒绝（已装副本与仅运行中的 core 各一）、`update` 对 `build_conflict` 机器拒绝，以及两个并发安装在锁上排队、最终不留下旧版本与临时文件。
 
 ## Managed program environments (P3)
 

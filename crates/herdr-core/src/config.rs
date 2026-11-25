@@ -44,6 +44,10 @@ pub struct Config {
     /// timeout on top), and to send anything at all before its line is
     /// given up and dialed again (default 30).
     pub machine_timeout: Option<f64>,
+    /// The directory of remote cores a Nearshell hub installs on machines:
+    /// manifest.json and the files it lists. Nearshell builds only.
+    #[cfg(feature = "nearshell")]
+    pub remote_payloads: Option<String>,
 }
 
 fn seconds<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Duration>, D::Error> {

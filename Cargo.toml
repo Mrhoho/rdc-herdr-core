@@ -13,6 +13,10 @@ lto = "fat"
 codegen-units = 1
 strip = true
 
+# A remote install hashes a whole core; unoptimized, a debug-size one takes seconds.
+[profile.dev.package.sha2]
+opt-level = 3
+
 # On top of clippy's defaults (CI denies warnings).
 [workspace.lints.clippy]
 dbg_macro = "warn"

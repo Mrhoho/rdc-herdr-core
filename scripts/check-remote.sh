@@ -9,9 +9,10 @@ scratch=$(mktemp -d /var/tmp/nc-remote.XXXXXX)
 trap 'rm -rf "$scratch"' EXIT HUP INT TERM
 cargo build --locked -p herdr-core --bin herdr-core
 cp "${CARGO_TARGET_DIR:-target}/debug/herdr-core" "$scratch/hc"
-# Builds of differing identity for tests/remote_machines.rs (test builds take
-# it unchecked; only herdr-core rebuilds for each): cur is the hub's build,
-# the others differ from it in release, commit or bundle ID.
+# Builds of differing identity for tests/remote_machines.rs and
+# tests/remote_install.rs (test builds take it unchecked; only herdr-core
+# rebuilds for each): cur is the hub's build, the others differ from it in
+# release, commit or bundle ID.
 variant() {
   NEARSHELL_CORE_RELEASE_SEQ=$2 NEARSHELL_CORE_COMMIT=$(printf "%040d" "$3") NEARSHELL_CORE_BUNDLE_ID=$4 \
     NEARSHELL_CORE_PATCHSET=check-remote NEARSHELL_CORE_CONFIG=dev \
@@ -25,4 +26,4 @@ variant other 2 1 com.nearshell.remote-test-other
 cargo clippy --locked -p herdr-core --features nearshell-test --all-targets -- -D warnings
 cargo test --locked -p herdr-core --features nearshell-test --lib
 NEARSHELL_HC_UPSTREAM_TEST_BIN="$scratch/hc" NEARSHELL_REMOTE_TEST_BINS="$scratch" \
-  cargo test --locked -p herdr-core --features nearshell-test --test remote_build --test remote_machines -- --include-ignored
+  cargo test --locked -p herdr-core --features nearshell-test --test remote_build --test remote_machines --test remote_install -- --include-ignored

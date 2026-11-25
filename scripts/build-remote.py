@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Build one locked remote nhc for Linux (see docs/nearshell-build.md): a static
-musl binary and its manifest entry, cross-compiled on macOS or native on Linux."""
+"""Build locked remote nhc payloads for Linux (see docs/nearshell-build.md): one
+static musl binary per target and the manifest a hub installs from (its
+`remote_payloads` directory), cross-compiled on macOS or native on Linux."""
 import argparse
 import hashlib
 import importlib.util
@@ -46,10 +47,22 @@ def runs_here(triple):
     return platform.system() == "Linux" and TARGETS[triple] == machine
 
 
-def entry(binary, triple, build):
+# The manifest format a hub reads (crates/herdr-core/src/machines/payload.rs).
+SCHEMA = 2
+
+
+def entry(binary, triple, build, executed):
     data = binary.read_bytes()
     return {"target": triple, "file": binary.name, "bytes": len(data),
-            "sha256": hashlib.sha256(data).hexdigest(), "build": build}
+            "sha256": hashlib.sha256(data).hexdigest(), "build": build, "executed": executed}
+
+
+def manifest(entries, provenance):
+    """One entry per target, in target order, beside where they came from."""
+    targets = [e["target"] for e in entries]
+    if len(set(targets)) != len(targets):
+        raise ValueError("one entry per target")
+    return {"schemaVersion": SCHEMA, "entries": sorted(entries, key=lambda e: e["target"]), **provenance}
 
 
 def main():
@@ -62,7 +75,8 @@ def main():
     parser.add_argument("--release-seq", required=True, type=int)
     parser.add_argument("--config", required=True, choices=["release", "dev"])
     parser.add_argument("--bundle-id", required=True)
-    parser.add_argument("--target", required=True, choices=sorted(TARGETS))
+    parser.add_argument("--target", required=True, action="append", choices=sorted(TARGETS),
+                        help="repeat for each target the payload directory holds")
     parser.add_argument("--output", required=True, type=pathlib.Path)
     parser.add_argument("--target-dir", type=pathlib.Path, help="optional reusable Cargo cache (not a source tree)")
     args = parser.parse_args()
@@ -93,29 +107,32 @@ def main():
         target = args.target_dir.resolve() if args.target_dir else work / "target"
         if target == source or source in target.parents or target == dest or dest in target.parents:
             raise ValueError("target-dir must be outside source and output")
+        entries = []
         with managed.cache_lock(target):
-            managed.run(cargo_command(args.target, target, cargo_home), cwd=src, env=env)
-            binary = product / f"nhc-{args.target}"
-            binary.write_bytes((target / args.target / "release/nhc").read_bytes())
-            binary.chmod(0o755)
-        # A cross build cannot run here: the identity is the one it was built
-        # with, and the installing side checks what the binary itself reports.
-        executed = runs_here(args.target)
-        if executed:
-            managed.verify_build_info(json.loads(managed.output([binary, "build-info", "--json"], env=env)), expected)
+            for triple in sorted(set(args.target)):
+                managed.run(cargo_command(triple, target, cargo_home), cwd=src, env=env)
+                binary = product / f"nhc-{triple}"
+                binary.write_bytes((target / triple / "release/nhc").read_bytes())
+                binary.chmod(0o755)
+                # A cross build cannot run here: the identity is the one it was built
+                # with, and the installing side checks what the binary itself reports.
+                executed = runs_here(triple)
+                if executed:
+                    managed.verify_build_info(
+                        json.loads(managed.output([binary, "build-info", "--json"], env=env)), expected)
+                entries.append(entry(binary, triple, expected, executed))
         for repo, commit, _ in trees:
             managed.check_tree(repo, commit)
-        manifest = {"schemaVersion": 1, "entry": entry(binary, args.target, expected), "executed": executed,
-                    "source": {"commit": args.commit, "submodules": {
-                        str(rel): commit for _, commit, rel in trees[1:]}},
-                    "buildDriverSha256": drivers,
-                    "toolchain": {"rustc": managed.output(["rustc", "--version"], env=env),
-                                  "cargo": managed.output(["cargo", "--version"], env=env),
-                                  "zig": managed.output([env.get("ZIG", "zig"), "version"], env=env),
-                                  "host": f"{platform.system()} {platform.machine()}"},
-                    "profile": {"name": "release", "strip": "symbols", "features": ["nearshell"],
-                                "linker": "rust-lld", "buildId": "sha1", "remap": [CARGO]}}
-        (product / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+        provenance = {"source": {"commit": args.commit, "submodules": {
+                          str(rel): commit for _, commit, rel in trees[1:]}},
+                      "buildDriverSha256": drivers,
+                      "toolchain": {"rustc": managed.output(["rustc", "--version"], env=env),
+                                    "cargo": managed.output(["cargo", "--version"], env=env),
+                                    "zig": managed.output([env.get("ZIG", "zig"), "version"], env=env),
+                                    "host": f"{platform.system()} {platform.machine()}"},
+                      "profile": {"name": "release", "strip": "symbols", "features": ["nearshell"],
+                                  "linker": "rust-lld", "buildId": "sha1", "remap": [CARGO]}}
+        (product / "manifest.json").write_text(json.dumps(manifest(entries, provenance), indent=2) + "\n")
         product.rename(dest)
     print(dest / "manifest.json")
 

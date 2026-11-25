@@ -11,9 +11,14 @@ use std::cmp::Ordering;
 /// This build's bundle ID: the remote core there was built with the same one.
 pub const BUNDLE: &str = env!("NEARSHELL_CORE_BUNDLE_ID");
 
-/// Where the line looks, from the home an SSH session starts in.
+/// The remote core's root, from the home an SSH session starts in.
+pub fn remote_root(bundle: &str) -> String {
+    format!("$HOME/.local/share/nearshell/{bundle}")
+}
+
+/// Where the line looks.
 fn remote_bin(bundle: &str) -> String {
-    format!("$HOME/.local/share/nearshell/{bundle}/bin/nhc")
+    format!("{}/bin/nhc", remote_root(bundle))
 }
 
 /// The line for a Unix machine. The bundle ID is letters, digits, `.` and `-`
@@ -76,8 +81,19 @@ impl Refusal {
 
     /// A refused dial, in a nearshell build; upstream redials everything.
     pub fn of(e: &RpcError) -> Option<Refusal> {
+        Refusal::named(&e.kind).filter(|_| cfg!(feature = "nearshell"))
+    }
+
+    /// The refusal a code or a machine's state names.
+    pub fn named(state: &str) -> Option<Refusal> {
         let all = [Refusal::NeedsUpdate, Refusal::MachineNewer, Refusal::BuildConflict, Refusal::Incompatible];
-        all.into_iter().find(|r| cfg!(feature = "nearshell") && r.state() == e.kind)
+        all.into_iter().find(|r| r.state() == state)
+    }
+
+    /// `machine update` on a machine held for what an install cannot fix: as
+    /// the dial refused it, under its own code.
+    pub fn refused(self, name: &str, why: &str) -> RpcError {
+        RpcError::new(self.state(), format!("{name}: {why}"), self.hint(&format!("nhc machine update {name}")))
     }
 
     /// What a call routed to a refused machine gets. Only needs_update keeps
@@ -87,7 +103,7 @@ impl Refusal {
         RpcError::new(kind, format!("{name}: {why}"), self.hint(&format!("nhc machine update {name}")))
     }
 
-    pub(super) fn hint(self, update: &str) -> String {
+    pub fn hint(self, update: &str) -> String {
         match self {
             Refusal::NeedsUpdate => format!("update its remote core: {update}"),
             Refusal::MachineNewer => "update Nearshell on this Mac".into(),
@@ -116,12 +132,16 @@ pub fn gate(here: &BuildInfo, there: Option<&BuildInfo>) -> Result<(), Refusal> 
     }
 }
 
+/// A build in a few words: `0123456789ab p2` (commit and patchset).
+pub fn short(b: &BuildInfo) -> String {
+    format!("{} {}", b.commit.get(..12).unwrap_or(&b.commit), b.patchset)
+}
+
 /// The gate on a dialed core's `hello`, as the dial's error. `add` says how
 /// the machine is added, for the update hint.
 pub fn admit(here: &BuildInfo, hello: &Value, target: &str, add: &str) -> Result<(), RpcError> {
     let there: Option<BuildInfo> = serde_json::from_value(hello["build"].clone()).ok();
     let Err(refusal) = gate(here, there.as_ref()) else { return Ok(()) };
-    let short = |b: &BuildInfo| format!("{} {}", b.commit.get(..12).unwrap_or(&b.commit), b.patchset);
     let expected = expected_remote(&here.config);
     let message = match &there {
         None => format!("{target} answers without a build identity: not a Nearshell remote core"),

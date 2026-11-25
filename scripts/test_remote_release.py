@@ -47,9 +47,21 @@ class RemoteGuards(unittest.TestCase):
             binary = pathlib.Path(temp) / "nhc-x86_64-unknown-linux-musl"
             binary.write_bytes(b"\x7fELF payload")
             build = remote.expected_build("b" * 40, "p", 2, "release", "com.example")
-            self.assertEqual(remote.entry(binary, "x86_64-unknown-linux-musl", build),
+            self.assertEqual(remote.entry(binary, "x86_64-unknown-linux-musl", build, False),
                              {"target": "x86_64-unknown-linux-musl", "file": binary.name, "bytes": 12,
-                              "sha256": hashlib.sha256(b"\x7fELF payload").hexdigest(), "build": build})
+                              "sha256": hashlib.sha256(b"\x7fELF payload").hexdigest(), "build": build,
+                              "executed": False})
+
+    def test_the_manifest_lists_every_target_once_as_a_hub_reads_it(self):
+        x86, arm = ({"target": t, "file": f"nhc-{t}"} for t in ("x86_64-unknown-linux-musl",
+                                                                "aarch64-unknown-linux-musl"))
+        doc = remote.manifest([x86, arm], {"source": {"commit": "c"}})
+        self.assertEqual(doc["schemaVersion"], 2)
+        self.assertEqual([e["target"] for e in doc["entries"]], sorted(remote.TARGETS))
+        self.assertEqual(doc["source"], {"commit": "c"})
+        self.assertNotIn("entry", doc)
+        with self.assertRaises(ValueError):
+            remote.manifest([x86, x86], {})
 
 
 if __name__ == "__main__":

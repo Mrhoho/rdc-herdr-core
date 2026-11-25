@@ -139,13 +139,16 @@ jobs:
           python3 -B scripts/build-remote.py --commit "$(git rev-parse HEAD)" \
             --patchset ci-unreleased --release-seq 1 --config dev --bundle-id com.nearshell.ci.agent \
             --target ${{ matrix.target }} --target-dir ../nhc-target --output "$RUNNER_TEMP/nhc-ci"
-      # The driver ran the native product and checked its build-info.
+      # The driver ran the native product and checked its build-info. The
+      # output is a payload directory a hub installs from (remote_payloads).
       - name: Pack (remote nhc)
         if: runner.os != 'Windows'
         run: |
           out="$RUNNER_TEMP/nhc-ci"
           bin="$out/nhc-${{ matrix.target }}"
           cat "$out/manifest.json"
+          python3 -c 'import hashlib, json, sys; m = json.load(open(sys.argv[1])); [e] = m["entries"]; assert m["schemaVersion"] == 2 and e["target"] == sys.argv[2] and e["executed"], m; assert e["sha256"] == hashlib.sha256(open(sys.argv[3], "rb").read()).hexdigest()' \
+            "$out/manifest.json" ${{ matrix.target }} "$bin"
           "$bin" --version
           "$bin" build-info --json | grep -q '"config":"dev:com.nearshell.ci.agent:remote"'
           file "$bin" | grep -q 'static' || { file "$bin"; echo "not static"; exit 1; }

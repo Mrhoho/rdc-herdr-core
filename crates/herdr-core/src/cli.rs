@@ -118,6 +118,17 @@ enum Cmd {
         #[arg(long)]
         session: Option<String>,
     },
+    /// Puts this copy of the remote core in place: a hub's install line runs
+    /// it on the copy it sent (`--from`, under `<root>/bin`).
+    #[cfg(all(feature = "nearshell", not(feature = "managed")))]
+    #[command(hide = true)]
+    Install {
+        #[arg(long)]
+        from: std::path::PathBuf,
+        /// The build the hub sent, as its install line encodes it.
+        #[arg(long)]
+        expect: String,
+    },
     #[command(hide = true)]
     Serve,
     #[command(hide = true)]
@@ -375,6 +386,11 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool, _owner_token: Option<&str>) ->
     if matches!(cmd, Some(Cmd::Connect { session: Some(_) })) {
         return Err(crate::paths::address_override());
     }
+    // A remote core is replaced only by a hub's install (its lock and checks).
+    #[cfg(all(feature = "nearshell", not(feature = "managed")))]
+    if matches!(cmd, Some(Cmd::Update { .. })) {
+        crate::branding::upstream_distribution()?;
+    }
     let paths = Paths::from_env()?;
     if !matches!(&cmd, Some(Cmd::Serve | Cmd::Hold { .. } | Cmd::Connect { .. })) {
         crate::platform::legacy_bundle_notice(&paths.state);
@@ -402,6 +418,11 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool, _owner_token: Option<&str>) ->
             crate::platform::prepare_core();
             crate::server::serve_owned(_owner_token).map_err(|e| RpcError::internal(e.to_string()))?;
             return Ok(None);
+        }
+        #[cfg(all(feature = "nearshell", not(feature = "managed")))]
+        Cmd::Install { from, expect } => {
+            let json = crate::landing::land(&paths, &from, &expect)?;
+            Out { human: json.to_string(), json }
         }
         Cmd::Hold { socket } => {
             crate::holder::run(socket).map_err(|e| RpcError::internal(e.to_string()))?;

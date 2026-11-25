@@ -178,6 +178,22 @@ pub fn try_lock(file: &File) -> bool {
     unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) == 0 }
 }
 
+/// Waits for the lock on `file` (remote installs take turns on install.lock).
+#[cfg(all(feature = "nearshell", not(feature = "managed")))]
+pub fn lock(file: &File) -> io::Result<()> {
+    match unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } {
+        0 => Ok(()),
+        _ => Err(io::Error::last_os_error()),
+    }
+}
+
+/// No process has this pid here (a live, reused or foreign one is not gone).
+#[cfg(all(feature = "nearshell", not(feature = "managed")))]
+pub fn process_gone(pid: u32) -> bool {
+    let Ok(pid) = i32::try_from(pid) else { return false };
+    pid > 0 && unsafe { libc::kill(pid, 0) } != 0 && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+}
+
 /// Managed verifier readers share a lease; the owner rotates it exclusively.
 #[cfg(feature = "managed")]
 pub fn try_shared_lock(file: &File) -> bool {

@@ -11,8 +11,16 @@ use std::path::Path;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
-mod nearshell;
+#[cfg(feature = "nearshell")]
+mod deliver;
+pub(crate) mod nearshell;
+#[cfg(feature = "nearshell")]
+mod payload;
+#[cfg(feature = "nearshell")]
+pub use deliver::deliver;
 pub use nearshell::Refusal;
+#[cfg(feature = "nearshell")]
+pub use payload::{Landed, describe, install_line, not_expected, parse_expect, summary};
 
 #[derive(Serialize, Deserialize, JsonSchema, Clone)]
 pub struct Machine {

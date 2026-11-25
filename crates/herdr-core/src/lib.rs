@@ -16,6 +16,8 @@ pub mod holder_proto;
 pub mod input;
 mod kept;
 pub mod keys;
+#[cfg(all(feature = "nearshell", not(feature = "managed")))]
+mod landing;
 pub mod locale;
 pub mod machines;
 pub mod notes;
