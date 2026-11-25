@@ -112,9 +112,13 @@ never blocks channel 0 or other streams.
 ### Ordered paint marks (fork extension)
 
 Check `hello.features` for `paint-marks`, then pass `marks: true` to
-`terminal.attach`. This is available on a **direct connection to the terminal's
-core**; a machine-relayed marked attach returns `marks_local_only` instead of
-silently losing markers. Omitted/false preserves the unmarked VT paint bytes.
+`terminal.attach`. Omitted/false preserves the unmarked VT paint bytes. A
+terminal on an added machine (`machine/t7`) works too: the core there makes the
+marks and this core relays them in order with the bytes (see "Relayed marked
+streams" below). That needs `paint-marks` in the hello of the core there as
+well; without it the attach fails with `marks_local_only` (`the core on
+<machine> does not support paint marks`) before anything is asked of that core,
+instead of silently losing markers.
 
 MARK payloads are JSON, on the attach channel, interleaved with DATA in one queue:
 
@@ -123,7 +127,9 @@ MARK payloads are JSON, on the attach channel, interleaved with DATA in one queu
 - `{"type":"discontinuity","droppedBytes":123}`
 
 The reason is one of the three strings (not the literal string with `|`). The
-generation increases per attach; reconnect starts a new stream and generation.
+generation increases with every paint of one attach stream, across a relay's
+reconnects too, and only the stream's first paint reads `attach`; a new attach
+starts a new stream and generation.
 The begin grid belongs to that frozen paint. A marked viewer's actual grid change
 invalidates the old transaction and sends a resync at the new size. MARK consumes
 **no DATA credit**, but cannot jump over pending DATA. Process both frame kinds
@@ -155,6 +161,29 @@ terminal keeps running. A client may retry with less history or fewer viewers.
 `server.status.viewer_pending` reports limit/used/peak/denied, generated paint
 bytes and active paint workers. Closing a connection cancels its producers and
 reclaims their allocations without waiting for credit.
+
+**Relayed marked streams.** A marked stream on a terminal of an added machine
+stays open when the line to that machine drops and comes back (the core there
+restarted or was updated, the network failed). The viewer reads one
+`discontinuity`, made by the relay, and no DATA after it until the next paint;
+when the line is back, a paint with reason `stitch` and a larger `paintGen`,
+then live output. A viewer that had not been painted yet gets no
+`discontinuity`, and its first paint reads `attach`. The relay attaches there
+again with the same `history`, which bounds every paint of a marked stream, the
+stitched one included. While the machine is held (for example `needs_update`)
+the stream waits after its `discontinuity` until the line is back, the machine
+is removed or the client closes it; if the core there no longer lists
+`paint-marks` when the line is back, the stream closes. A `discontinuity` from
+the core there makes the relay drop what the viewer has not read and pass on
+one `discontinuity` whose `droppedBytes` adds what it dropped. The relay
+counts only bytes it dropped unread, so `droppedBytes` is a lower bound: `0`
+does not mean nothing was lost (output written while the line was down is not
+counted). A relayed marked stream gets no RESIZE, and its reply has
+`resize_notifications: false` whatever was asked: the grid is in each
+`paint_begin`. One whose backlog on the relaying core passes 4 MiB of DATA or
+1024 queued marks closes with `paint_limit`, and its stream on the core there
+is closed too; a viewer that reads and credits as it goes stays far below
+that.
 
 A viewer detaches by sending CLOSE; the core answers with an empty CLOSE.
 When the program ends, the core sends CLOSE with
@@ -316,8 +345,9 @@ FACTS/theme changes and resets work correctly. Effective default changes queue
 an ordered resync for marked viewers, including changes with no resize. These
 snapshots and marks use P1's existing shared budget, cancellation and CREDIT
 ordering. Unmarked legacy streams keep their original paint representation;
-full layered color replay requires the two features above. Direct core
-connections are required (P1's machine-relay limitation still applies).
+full layered color replay requires the two features above. On a machine's
+terminal the core there makes `colors` and the relay passes it on unchanged;
+the relay checks only `paint-marks` there.
 
 Color queries are answered once by core and removed from the viewer stream;
 setters in a mixed set/query OSC still reach viewers. Batch OSC 4 queries use

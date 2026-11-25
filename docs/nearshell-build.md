@@ -246,8 +246,8 @@ just remote-e2e --work <新目录> [--round a|b] [--arch aarch64|x86_64] [--buil
 
 不指定轮次时 macOS 上跑两轮、Linux 上只跑 a；对端架构可重复指定，默认本机架构（其他架构经仿真）；构建目录按 commit 复用。日志在 `<work>/e2e.log`，用户可见的文本汇总在 `<work>/user-visible.txt`。容器与网络结束时都删掉；镜像 `nhc-e2e:<arch>`（Debian 12 + systemd、sshd、tmpreaper）保留供下次使用，`just remote-e2e --remove-images …` 一并删除。密钥在运行时生成到 `<work>/keys`。b 轮另在本机 `/var/tmp/ne2e-*` 下放 hub 的根目录与 ssh 配置（socket 路径要短），结束时删除。
 
-- **a 轮**：两台容器。hub 账户用远端产品构建当 hub，自己的 `~/.ssh`（config、密钥、known_hosts）以普通的 `ssh far` 连对端；对端账户的登录配置导出 `HC_SESSION`/`HC_SOCKET`。依次核对：空账户 `machine add` 得到 `hc_missing`；`add --install`（在伪终端里，人读输出）装上 release 1、打印 linger 警告并 `connected`，`machine ls` 显示对端构建；`run --on`、`read`、`exec`（`NEARSHELL_HC` 与 `PATH` 指向远端根）；不带 marks 的 `attach` 看到输出并以 ctrl+\ 退出，带 marks 的 attach（hello framed 后的 `terminal.attach`）得到 `marks_local_only`；对端 core 与 holder 是 `nearshell-serve-*`、`nearshell-hold-*` 用户服务，排在 `nearshell-shutdown-*` 之后，环境里没有 `HC_SESSION`/`HC_SOCKET`，`UnsetEnvironment` 列出这两个；socket 在 `/tmp/nearshell-<uid>-<8 位>/c.sock`，目录 0700；登出后（不开 linger）终端结束；以 root 执行警告里的 `loginctl enable-linger` 后，hub 换到 release 2 得到 `needs_update`，`machine update` 后 `connected` 在 release 2，终端 pid 不变且仍在输出；关掉全部登录后终端仍在；hub 退回 release 1 时 `machine_newer`，`update` 与 `add --install` 都被拒、对端仍是 release 2；`machine rm` 后对端 core、终端与文件都在。另外三项：会话的 `$HOME` 被登录配置改掉的账户、socket 目录被别的账户抢先建好的账户、`/tmp` 清理工具。
-- **b 轮**：本机的 managed-test hub（脚本充当 owner：持 `owner.lock`、写 verifier 与 `remote_payloads`、`server start --owner-token`）经 `/usr/bin/ssh` 连对端容器（端口只发布到 127.0.0.1）。对端是 nearshell-test 构建，sshd 的 `SetEnv` 让 `NEARSHELL_HC_TEST_ROOT` 等于拨号行用的路径。覆盖添加、安装、`machine login`（ControlMaster）、`ls`、`run`、`read`、两种 attach、对端服务与环境、更新、降级被拒、`rm`（同时结束共享登录）。
+- **a 轮**：两台容器。hub 账户用远端产品构建当 hub，自己的 `~/.ssh`（config、密钥、known_hosts）以普通的 `ssh far` 连对端；对端账户的登录配置导出 `HC_SESSION`/`HC_SOCKET`。依次核对：空账户 `machine add` 得到 `hc_missing`；`add --install`（在伪终端里，人读输出）装上 release 1、打印 linger 警告并 `connected`，`machine ls` 显示对端构建；`run --on`、`read`、`exec`（`NEARSHELL_HC` 与 `PATH` 指向远端根）；不带 marks 的 `attach` 看到输出并以 ctrl+\ 退出；带 marks 的 attach（App 的做法，边读边回 CREDIT，按 App 解析器的规则核对每一帧，见 `scripts/e2e-remote-viewer.py`）应答 `resize_notifications: false`，收到 `paint_begin`（`attach`、`paintGen` 1，hub 报 `display-palette` 时带 `colors`）→ DATA → `paint_end` → 实时输出；对端 core 与 holder 是 `nearshell-serve-*`、`nearshell-hold-*` 用户服务，排在 `nearshell-shutdown-*` 之后，环境里没有 `HC_SESSION`/`HC_SOCKET`，`UnsetEnvironment` 列出这两个；socket 在 `/tmp/nearshell-<uid>-<8 位>/c.sock`，目录 0700；登出后（不开 linger）终端结束；以 root 执行警告里的 `loginctl enable-linger` 后，hub 换到 release 2 得到 `needs_update`，`machine update` 后 `connected` 在 release 2，终端 pid 不变且仍在输出；随后一条带 marks 的流（按终端现有尺寸）在两次断线中保持打开：对端 core `server restart`，线路自动恢复；对端手工换成 release 1 再重启，hub 停在 `needs_update`，流里只有一条 `discontinuity`，`machine update` 换回 release 2 后恢复。每次断线恰好一条 `discontinuity`，其后是 `stitch`、`paintGen` 更大、历史超出可见行数的重绘，再是实时输出（hub 换版本要重启并结束客户端的流，所以流跨的不是前面那次 `machine update`）；关掉全部登录后终端仍在；hub 退回 release 1 时 `machine_newer`，`update` 与 `add --install` 都被拒、对端仍是 release 2；`machine rm` 后对端 core、终端与文件都在。另外三项：会话的 `$HOME` 被登录配置改掉的账户、socket 目录被别的账户抢先建好的账户、`/tmp` 清理工具。
+- **b 轮**：本机的 managed-test hub（脚本充当 owner：持 `owner.lock`、写 verifier 与 `remote_payloads`、`server start --owner-token`）经 `/usr/bin/ssh` 连对端容器（端口只发布到 127.0.0.1）。对端是 nearshell-test 构建，sshd 的 `SetEnv` 让 `NEARSHELL_HC_TEST_ROOT` 等于拨号行用的路径。覆盖添加、安装、`machine login`（ControlMaster）、`ls`、`run`、`read`、两种 attach、对端服务与环境、更新、带 marks 的流跨两次断线（同 a 轮）、降级被拒、`rm`（同时结束共享登录）。
   - 与产品 managed hub 的差别：owner 是脚本而不是 App（没有 GUI 的 launchd 环境与登录 shell 的 PATH）；测试构建的根目录与 socket 来自 `NEARSHELL_HC_TEST_ROOT`；hub 的 `PATH` 最前面是一个 `ssh` 包装，执行 `/usr/bin/ssh -F <脚本的 config>`（只用脚本生成的密钥与 known_hosts，`IdentityAgent none`），用户的 `~/.ssh`、agent 与钥匙串不会被读写。没有用 `HC_SSH`：managed 的启动环境去掉全部 `HC_*`，它到不了 core。除这个包装外，拨号、安装与 `login` 走的是产品的 `ssh()`（`-S` 共享登录、`ControlMaster`、`-T`、`BatchMode` 等选项）。
 
 已在 Debian 12（systemd 252、OpenSSH 9.2）上看到的行为：
@@ -404,8 +404,10 @@ existing upstream namespace helper. Do not distribute managed-test builds.
 `terminal.attach {marks:true}`. The complete MARK payload, ordering, CREDIT,
 resync and resource contracts are in [the wire specification](../schema/README.md#ordered-paint-marks-fork-extension).
 This applies to both default and managed builds. CLI attach remains unmarked.
-Remote relay currently rejects marked attach explicitly; connect to the target
-core directly. No holder protocol or vendored Ghostty source changes are needed.
+A terminal on an added machine is relayed with its marks when the core there
+advertises `paint-marks` (otherwise `marks_local_only`); the stream stays open
+when the line drops, then reads a `discontinuity` and a `stitch` paint. No
+holder protocol or vendored Ghostty source changes are needed.
 
 The default shared pending limit is 64 MiB (`viewer_pending_bytes` in config,
 server restart to apply). A 4,600-row per-cell RGB history produced more than
@@ -438,7 +440,8 @@ again after reconnect, while program colors survive handover.
 For `terminal.attach` with `marks: true`, `history: N` is a subscription bound,
 not only an initial-paint option. Every later synthetic paint (resize, display
 facts, overflow, stitch or holder restoration) replays up to the same N history
-rows. Receivers replace their parser at `paint_begin`, so a screen-only resync
+rows; a machine relay attaches there again with the same N when its line comes
+back. Receivers replace their parser at `paint_begin`, so a screen-only resync
 would otherwise silently erase scrollback. As in upstream v0.1.21, attaching
 on an alternate screen also restores the hidden primary screen and its bounded
 history, so leaving the alternate screen reveals the original primary content.

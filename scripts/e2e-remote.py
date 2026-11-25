@@ -32,9 +32,18 @@ import time
 import traceback
 
 HERE = pathlib.Path(__file__).resolve().parent
-_spec = importlib.util.spec_from_file_location("build_remote", HERE / "build-remote.py")
-remote = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(remote)
+
+
+def load(name, file):
+    spec = importlib.util.spec_from_file_location(name, HERE / file)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+remote = load("build_remote", "build-remote.py")
+viewer = load("e2e_remote_viewer", "e2e-remote-viewer.py")
+Failed, ticks, PTY = viewer.Failed, viewer.ticks, viewer.PTY
 
 BUNDLE = "com.nearshell.e2e"
 PATCHSET = "e2e"
@@ -55,63 +64,6 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
 STOPSIGNAL SIGRTMIN+3
 CMD ["/lib/systemd/systemd"]
 """
-
-# A command in a pseudo-terminal, as a person runs it (nhc prints its human
-# output only to a terminal). With a detach delay it is a viewer: what
-# `attach` shows, then ctrl+\ detaches.
-PTY = r"""
-import fcntl, json, os, pty, select, signal, struct, sys, termios, time
-detach, argv = float(sys.argv[1]), sys.argv[2:]
-pid, fd = pty.fork()
-if pid == 0:
-    os.execvp(argv[0], argv)
-fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 120, 0, 0))
-out, start, sent, status = b"", time.time(), False, None
-while time.time() - start < 120:
-    if detach and not sent and time.time() - start > detach:
-        os.write(fd, b"\x1c")
-        sent = True
-    if select.select([fd], [], [], 0.2)[0]:
-        try:
-            data = os.read(fd, 65536)
-        except OSError:
-            data = b""
-        out += data
-    done, code = os.waitpid(pid, os.WNOHANG)
-    if done:
-        status = os.waitstatus_to_exitcode(code)
-        break
-if status is None:
-    os.kill(pid, signal.SIGKILL)
-    os.waitpid(pid, 0)
-print(json.dumps({"status": status, "output": out.decode("utf-8", "replace")}))
-"""
-
-# The App's attach: hello with framed: true, then terminal.attach with
-# marks: true as a frame on channel 0 ([channel u32][kind u8][len u32]).
-MARKS = r"""
-import json, socket, struct, sys
-s = socket.socket(socket.AF_UNIX)
-s.connect(sys.argv[1])
-s.sendall((json.dumps({"jsonrpc": "2.0", "id": 1, "method": "hello", "params": {"framed": True}}) + "\n").encode())
-f = s.makefile("rb")
-hello = json.loads(f.readline())
-assert hello["result"]["framed"] is True, hello
-call = {"jsonrpc": "2.0", "id": 2, "method": "terminal.attach", "params": {"terminal": sys.argv[2], "marks": True}}
-body = json.dumps(call).encode()
-s.sendall(struct.pack("<IBI", 0, 0, len(body)) + body)
-while True:
-    channel, kind, size = struct.unpack("<IBI", f.read(9))
-    payload = f.read(size)
-    if channel == 0 and kind == 0 and json.loads(payload).get("id") == 2:
-        print(payload.decode())
-        break
-"""
-
-
-class Failed(Exception):
-    pass
-
 
 class Log:
     def __init__(self, path):
@@ -289,14 +241,17 @@ class Box:
         wait_for(f"{name}: systemd is up", lambda: self.sh(
             "systemctl is-system-running", check_rc=False)[1].strip() in ("running", "degraded"), timeout=180)
 
-    def sh(self, script, user=None, check_rc=True, input=None, timeout=300):
+    def exec(self, user=None):
         args = ["docker", "exec", "-i"]
         if user:
             uid = self.uid(user) if user != "root" else 0
             args += ["-u", user, "-w", f"/home/{user}", "-e", f"HOME=/home/{user}", "-e", f"USER={user}",
                      "-e", f"XDG_RUNTIME_DIR=/run/user/{uid}", "-e", "LANG=C.UTF-8",
                      "-e", f"PATH=/home/{user}/bin:/usr/local/bin:/usr/bin:/bin"]
-        return run(args + [self.name, "sh", "-c", script], check_rc=check_rc, input=input, timeout=timeout)
+        return args + [self.name]
+
+    def sh(self, script, user=None, check_rc=True, input=None, timeout=300):
+        return run(self.exec(user) + ["sh", "-c", script], check_rc=check_rc, input=input, timeout=timeout)
 
     def uid(self, user):
         if user not in self.uids:
@@ -334,8 +289,11 @@ class Box:
 # --- the far end, inspected as root ---------------------------------------------
 
 class Far:
-    def __init__(self, box, user, root):
-        self.box, self.user, self.root = box, user, root
+    """`payloads`: the builds' payload directories for it (`remote-<n>` or
+    `test-<n>`); `env`: what its own nhc needs on its command line."""
+
+    def __init__(self, box, user, root, payloads="remote", env=""):
+        self.box, self.user, self.root, self.payloads, self.env = box, user, root, payloads, env
         self.uid = box.uid(user)
 
     def user_sh(self, script, check_rc=True):
@@ -358,6 +316,16 @@ class Far:
 
     def build_info(self):
         return json.loads(self.box.sh(f"{self.root}/bin/nhc build-info --json")[1])
+
+    def restart(self, builds=None, seq=None):
+        """Its core restarts as an update restarts it (`server restart`; the
+        holder keeps the terminals), onto release `seq` put in place by hand
+        when given: an install never puts an older one there."""
+        if seq:
+            new = f"{self.root}/bin/.e2e-nhc"
+            self.box.copy(builds / f"{self.payloads}-{seq}" / f"nhc-{ARCHES[self.box.arch][0]}", new)
+            self.box.sh(f"chown {self.user}: {new} && chmod 700 {new} && mv -f {new} {self.root}/bin/nhc")
+        self.user_sh(f"{self.env}{self.root}/bin/nhc server restart")
 
     def check_services(self, socket, expected_config):
         """The core and holder run as the user's systemd services under the
@@ -424,6 +392,15 @@ class Hub:
     def attach(self, terminal):
         return json.loads(self.tty(3, "attach", terminal))
 
+    def marked(self, terminal):
+        """The App's attach, held open (see e2e-remote-viewer.py), at the
+        terminal's size: a new one would repaint it at once."""
+        t = self.json("get", terminal)
+        params = {"terminal": terminal, "marks": True, "cols": t["cols"], "rows": t["rows"], "history": 1000}
+        LOG.raw(f"$ (marked viewer on {self.socket}) {json.dumps(params)}")
+        argv = self.spawn(viewer.PROGRAM, self.socket, json.dumps(params))
+        return viewer.Viewer(argv, params, LOG.say, check, wait_for)
+
     def machine(self, name):
         found = [m for m in self.json("machine", "ls")["machines"] if m["name"] == name]
         return found[0] if found else None
@@ -436,6 +413,7 @@ class Hub:
 class LinuxHub(Hub):
     def __init__(self, box, user="hub"):
         self.box, self.user = box, user
+        self.socket = f"/tmp/nearshell-1000-{SHA8}/c.sock"
 
     def nhc(self, *args, check_rc=True):
         return self.box.sh(shlex.join(["nhc", *args]), user=self.user, check_rc=check_rc)
@@ -446,13 +424,16 @@ class LinuxHub(Hub):
     def tty(self, detach, *args):
         return self.python(PTY, str(detach), "nhc", *args)
 
+    def spawn(self, code, *args):
+        return self.box.exec(self.user) + ["python3", "-c", code, *args]
+
     def masters(self):
         return self.box.sh(f"ls /tmp/nearshell-1000-{SHA8}/ | grep ^ssh- || true", user=self.user)[1].split()
 
 
 class MacHub(Hub):
     def __init__(self, root, shim, binary):
-        self.root, self.binary = root, binary
+        self.root, self.binary, self.socket = root, binary, str(root / "run/c.sock")
         self.token = secrets.token_hex(32)
         self.env = {"PATH": f"{shim}:/usr/bin:/bin:/usr/sbin:/sbin", "NEARSHELL_HC_TEST_ROOT": str(root),
                     "HOME": str(root / "wrong-home"), "LANG": "en_US.UTF-8", "TMPDIR": os.environ.get("TMPDIR", "/tmp")}
@@ -479,17 +460,16 @@ class MacHub(Hub):
     def tty(self, detach, *args):
         return run([sys.executable, "-I", "-c", PTY, str(detach), self.binary, *args], env=self.env)[1]
 
+    def spawn(self, code, *args):
+        return [sys.executable, "-I", "-c", code, *args]
+
     def masters(self):
         return [m.name for m in (self.root / "run").glob("ssh-*")]
 
 
 # --- the shared scenario -------------------------------------------------------------
 
-def ticks(text):
-    return [int(n) for n in re.findall(r"tick (\d+)", text)]
-
-
-def terminal_scenario(hub, far, socket_here, label):
+def terminal_scenario(hub, far, label):
     """run --on, read, plain attach, marked attach, and what the far end is."""
     LOG.say(f"### {label}: a terminal there")
     t = hub.json("run", "--bg", "--on", "far", "--name", "ticker", "--", "sh", "-c", TICKER)
@@ -507,12 +487,35 @@ def terminal_scenario(hub, far, socket_here, label):
     LOG.raw(json.dumps(attached))
     check(attached["status"] == 0 and ticks(attached["output"]), f"plain attach to far/ticker shows its output and "
           f"detaches with ctrl+\\ (exit {attached['status']})")
-    reply = json.loads(hub.python(MARKS, socket_here, "far/ticker"))
-    LOG.raw(json.dumps(reply))
-    check(reply.get("error", {}).get("data", {}).get("kind") == "marks_local_only",
-          "attach with marks:true is refused as marks_local_only")
-    LOG.shown("marked attach to a remote terminal (JSON-RPC error)", json.dumps(reply["error"]))
+    with hub.marked("far/ticker") as v:
+        v.paint(0, "attach", 0)
     return pid
+
+
+def marked_scenario(hub, far, term, builds, label):
+    """One marked stream while the line drops twice: the core there restarts
+    and the line comes back by itself; then it restarts onto release 1, which
+    holds the machine at needs_update until `machine update` puts release 2
+    back. (The update above follows the hub's restart, which ends streams.)"""
+    LOG.say(f"### {label}: a marked stream while the core there restarts")
+    with hub.marked(term) as v:
+        at = v.paint(0, "attach", 0)[1]
+        wait_for("it wrote more lines than the screen has", lambda: v.tick() > v.size[1] + 2, timeout=120)
+        last = v.newest()
+        far.restart()
+        at = v.stitched(at, last)
+        last = v.newest()
+        far.restart(builds, 1)
+        wait_for("far is needs_update (its core is release 1 now)", lambda: hub.state("far") == "needs_update",
+                 timeout=90)
+        time.sleep(3)
+        held = [e["type"] for e in (v.gap(at) or (0, []))[1]]
+        check(held == ["gap"], f"meanwhile the stream got one discontinuity and nothing after it ({held})")
+        out = hub.human("machine update, a marked stream open", "machine", "update", "far")["output"]
+        check("updated its remote core from release 1 to 2; its terminals kept running" in out,
+              "machine update puts release 2 back")
+        v.stitched(at, last)
+        check(sum(e["type"] == "gap" for e in v.events()) == 2, "two discontinuities in all, one per lost line")
 
 
 def install_scenario(hub, far, label):
@@ -568,6 +571,7 @@ def update_scenario(hub, far, pid, term, builds, label, restart):
     check(later > first > before, f"and still writing (tick {first} -> {later})")
     out = hub.human("machine update, again", "machine", "update", "far")["output"]
     check("its remote core is already current (release 2)" in out, "a second update leaves it as it is")
+    marked_scenario(hub, far, term, builds, label)
 
 
 def downgrade_scenario(hub, far, builds, label, restart):
@@ -649,8 +653,7 @@ def round_a(work, builds, arch, keys):
     LOG.say(f"  far keeps_running_after_logout={m.get('keeps_running_after_logout')} "
             f"logout_linger_user={m.get('logout_linger_user')}")
     far_socket = f"/tmp/nearshell-{far.uid}-{SHA8}/c.sock"
-    hub_socket = f"/tmp/nearshell-1000-{SHA8}/c.sock"
-    pid = terminal_scenario(hub, far, hub_socket, label)
+    pid = terminal_scenario(hub, far, label)
     far.check_services(far_socket, f"dev:{BUNDLE}:remote")
 
     LOG.say(f"### {label}: every login there ends, no linger")
@@ -769,7 +772,7 @@ def round_b(work, builds, arch, keys):
     # A test build takes its root from NEARSHELL_HC_TEST_ROOT: sshd sets it to
     # the path the dial line uses.
     box.sshd(keys[f"host-{arch}"], f"Match User far\n    SetEnv NEARSHELL_HC_TEST_ROOT={far_root}\n")
-    far = Far(box, "far", far_root)
+    far = Far(box, "far", far_root, "test", f"NEARSHELL_HC_TEST_ROOT={far_root} ")
     port = box.port()
     # This Mac's side: a scratch ssh config, key and known_hosts; `ssh` on the
     # hub's PATH is /usr/bin/ssh reading only that config.
@@ -813,7 +816,7 @@ def round_b(work, builds, arch, keys):
             wait_for("no hub core or holder is left on this Mac", lambda: run(
                 ["pgrep", "-f", hubs], check_rc=False)[0] != 0, timeout=20)
             run(["pkill", "-f", str(b)], check_rc=False)
-            far.user_sh(f"NEARSHELL_HC_TEST_ROOT={far_root} {far_root}/bin/nhc server stop", check_rc=False)
+            far.user_sh(f"{far.env}{far_root}/bin/nhc server stop", check_rc=False)
     finally:
         shutil.rmtree(b, ignore_errors=True)
         teardown_docker()
@@ -829,7 +832,7 @@ def b_scenario(hub, far, root, builds, label, restart):
     masters = list((root / "run").glob("ssh-*"))
     check(len(masters) == 1 and masters[0].is_socket(), f"one ControlMaster socket: {[m.name for m in masters]}")
     hub.nhc("machine", "connect", "far", check_rc=False)
-    pid = terminal_scenario(hub, far, str(root / "run/c.sock"), label)
+    pid = terminal_scenario(hub, far, label)
     far.check_services(f"{far.root}/run/c.sock", f"dev:{BUNDLE}:remote:scratch-test")
     update_scenario(hub, far, pid, "far/ticker", builds, label, restart)
     downgrade_scenario(hub, far, builds, label, restart)

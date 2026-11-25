@@ -422,7 +422,7 @@ pub struct ReadResult {
 
 #[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
 pub struct AttachParams {
-    /// Ordered MARK frames (hello feature paint-marks), local terminals only.
+    /// Ordered MARK frames (hello feature paint-marks), relayed for `machine/t7` when the core there lists it too.
     #[arg(skip)]
     #[serde(default)]
     pub marks: bool,

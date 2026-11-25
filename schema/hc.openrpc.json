@@ -2676,12 +2676,12 @@
           }
         },
         {
-          "description": "Ordered MARK frames (hello feature paint-marks), local terminals only.",
+          "description": "Ordered MARK frames (hello feature paint-marks), relayed for `machine/t7` when the core there lists it too.",
           "name": "marks",
           "required": false,
           "schema": {
             "default": false,
-            "description": "Ordered MARK frames (hello feature paint-marks), local terminals only.",
+            "description": "Ordered MARK frames (hello feature paint-marks), relayed for `machine/t7` when the core there lists it too.",
             "type": "boolean"
           }
         },
