@@ -142,7 +142,7 @@ pub fn command_names() -> Vec<String> {
 
 // Clap derives help from doc comments; brand that authored text before parsing.
 fn branded_command(mut cmd: clap::Command) -> clap::Command {
-    if !cfg!(feature = "managed") {
+    if !cfg!(feature = "nearshell") {
         return cmd;
     }
     if let Some(text) = cmd.get_about() {

@@ -13,22 +13,22 @@ pub struct Paths {
     pub config: PathBuf,
 }
 
-#[cfg(feature = "managed")]
+#[cfg(feature = "nearshell")]
 mod managed;
 
 impl Paths {
     pub fn from_env() -> Result<Paths, RpcError> {
-        #[cfg(feature = "managed")]
+        #[cfg(feature = "nearshell")]
         {
             managed::from_env()
         }
-        #[cfg(not(feature = "managed"))]
+        #[cfg(not(feature = "nearshell"))]
         {
             Self::upstream_from_env()
         }
     }
 
-    #[cfg(not(feature = "managed"))]
+    #[cfg(not(feature = "nearshell"))]
     fn upstream_from_env() -> Result<Paths, RpcError> {
         let session = session(std::env::var("HC_SESSION").ok())?;
         let xdg = |var: &str, fallback: PathBuf| {
@@ -95,7 +95,7 @@ pub const HOLDER_ID: usize = 8;
 /// The session name goes into folder and pipe names. Spaces around it are
 /// dropped (cmd's `set X=a & ...` keeps the one before `&`); characters a
 /// path can't hold are refused.
-#[cfg(any(not(feature = "managed"), test))]
+#[cfg(any(not(feature = "nearshell"), test))]
 fn session(raw: Option<String>) -> Result<String, RpcError> {
     let name = raw.as_deref().map(str::trim).filter(|s| !s.is_empty()).unwrap_or("default");
     if name == "." || name == ".." || name.chars().any(|c| c.is_control() || r#"/\:*?"<>|"#.contains(c)) {

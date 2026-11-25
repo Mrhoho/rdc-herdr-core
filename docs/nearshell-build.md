@@ -8,7 +8,7 @@
 
 默认 `cargo build --bin herdr-core` 保持 `hc` 命令名称及 HC_SESSION、HC_SOCKET、XDG 规则。
 
-Nearshell 使用 `cargo build --locked --features managed --bin nhc`（当前只支持 macOS）。必须在构建环境指定：
+Nearshell 使用 `cargo build --locked --features managed --bin nhc`（当前只支持 macOS）。`managed` 隐含 `nearshell`：`nearshell` 负责身份隔离（`nhc` 命名、私有寻址、拒绝地址覆盖、禁用上游分发、构建身份必填与 `config` 后缀，`nhc` 目标也只要求它）；`managed` 再加 owner 生命周期与 `[programs]` 程序环境。只开 `nearshell` 不开 `managed` 的构建目前由 `build.rs` 拒绝。必须在构建环境指定：
 
 | 变量 | 契约 |
 |---|---|
@@ -34,7 +34,7 @@ managed 构建通过当前 OS 账户的 home 目录读取：
 
 HC_SESSION、HC_SOCKET 只要存在（包括空值）就返回 `managed_address_override`；`connect --session` 也被拒绝。HOME 与 XDG 环境不改变地址。config 缺失、语法错误、socket 缺失/非法、路径过长返回 `managed_config`，不会回退上游默认路径。socket 父目录必须属于当前用户、mode 0700、不是符号链接；不存在时创建，不修复已有的不安全目录。为派生 holder socket 预留长度。
 
-`managed-test` 隐含 `managed`，必须给出绝对路径 `NEARSHELL_HC_TEST_ROOT`，config/state 使用上述相对结构，socket 必须位于 scratch 内。没有这个变量时拒绝运行，不回退产品路径。此开关不编入生产 managed 构建；测试构建身份有明显后缀，不能分发。
+`managed-test` 即 `managed` 加 `nearshell-test`；测试根覆盖由 `nearshell-test` 提供，必须给出绝对路径 `NEARSHELL_HC_TEST_ROOT`，config/state 使用上述相对结构，socket 必须位于 scratch 内。没有这个变量时拒绝运行，不回退产品路径。此开关不编入生产 managed 构建；测试构建身份有明显后缀，不能分发。
 
 ## 命名与隔离
 

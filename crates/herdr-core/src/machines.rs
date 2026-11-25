@@ -250,7 +250,7 @@ fn pipe(
     session: Option<&str>,
     windows: bool,
 ) -> Result<tokio::process::Command, RpcError> {
-    let remote = if cfg!(feature = "managed") {
+    let remote = if cfg!(feature = "nearshell") {
         format!("nhc connect{}", session.map(|s| format!(" --session {s}")).unwrap_or_default())
     } else if windows {
         let session = session.map(|s| format!(" --session {s}")).unwrap_or_default();
@@ -673,7 +673,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(feature = "managed"))]
+    #[cfg(not(feature = "nearshell"))]
     fn a_windows_box_gets_one_line_cmd_and_powershell_read_alike() {
         let paths = crate::paths::Paths::from_env().unwrap();
         let cmd = pipe(&paths, Reach { target: "winbox", via: false }, Some("s1"), true).unwrap();

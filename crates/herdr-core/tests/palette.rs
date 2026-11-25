@@ -1,5 +1,5 @@
 //! P2: real PTY query answers and a viewer parsing the ordered MARK/VT baseline.
-#![cfg(all(unix, not(feature = "managed")))]
+#![cfg(all(unix, not(feature = "nearshell")))]
 mod common;
 use common::{framed::Framed, *};
 use herdr_core::wire;

@@ -3,17 +3,23 @@ use std::env;
 
 fn main() {
     macos_identity();
+    // nearshell: identity isolation; managed adds the App owner on top of it.
+    let nearshell = env::var_os("CARGO_FEATURE_NEARSHELL").is_some();
     let managed = env::var_os("CARGO_FEATURE_MANAGED").is_some();
-    let test = env::var_os("CARGO_FEATURE_MANAGED_TEST").is_some();
+    let test = env::var_os("CARGO_FEATURE_NEARSHELL_TEST").is_some();
     if managed {
         assert!(
             env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos"),
             "managed distribution currently targets macOS only"
         );
     }
+    assert!(
+        managed || !nearshell,
+        "the remote build (feature nearshell without managed) is not enabled yet; build with managed or neither"
+    );
     println!("cargo:rerun-if-env-changed=NEARSHELL_CORE_BUNDLE_ID");
     let bundle = env::var("NEARSHELL_CORE_BUNDLE_ID").unwrap_or_else(|_| {
-        assert!(!managed || test, "managed builds require NEARSHELL_CORE_BUNDLE_ID");
+        assert!(!nearshell || test, "managed builds require NEARSHELL_CORE_BUNDLE_ID");
         "com.nearshell.core-test".into()
     });
     assert!(
@@ -31,10 +37,10 @@ fn main() {
         let var = format!("NEARSHELL_CORE_{key}");
         println!("cargo:rerun-if-env-changed={var}");
         let mut value = env::var(&var).unwrap_or_else(|_| {
-            assert!(!managed || test, "managed builds require {var}");
+            assert!(!nearshell || test, "managed builds require {var}");
             fallback.into()
         });
-        if managed && !test {
+        if nearshell && !test {
             match key {
                 "COMMIT" => assert!(
                     value.len() == 40 && value.bytes().all(|b| b.is_ascii_hexdigit()),
@@ -47,7 +53,7 @@ fn main() {
                 _ => {}
             }
         }
-        if key == "CONFIG" && managed {
+        if key == "CONFIG" && nearshell {
             // Includes the addressing contract, so differently configured binaries
             // cannot accidentally advertise the same complete identity.
             value = format!("{value}:{bundle}{}", if test { ":scratch-test" } else { "" });

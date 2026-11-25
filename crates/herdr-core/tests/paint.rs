@@ -1,5 +1,5 @@
 //! P1 end-to-end contracts: real core, holder, PTY and framed socket.
-#![cfg(all(unix, not(feature = "managed")))]
+#![cfg(all(unix, not(feature = "nearshell")))]
 mod common;
 use common::{framed::Framed, *};
 use herdr_core::wire;

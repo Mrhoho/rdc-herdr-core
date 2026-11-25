@@ -1,16 +1,16 @@
 //! Names in authored CLI prose. Never apply this renderer to program output,
 //! user templates, terminal data, paths, or arbitrary RPC values.
-#[cfg(feature = "managed")]
+#[cfg(feature = "nearshell")]
 pub const COMMAND: &str = "nhc";
-#[cfg(not(feature = "managed"))]
+#[cfg(not(feature = "nearshell"))]
 pub const COMMAND: &str = "hc";
-#[cfg(feature = "managed")]
+#[cfg(feature = "nearshell")]
 pub const VERSION_PREFIX: &str = "nhc ";
-#[cfg(not(feature = "managed"))]
+#[cfg(not(feature = "nearshell"))]
 pub const VERSION_PREFIX: &str = "hc ";
 
 pub fn text(source: &str) -> String {
-    if !cfg!(feature = "managed") {
+    if !cfg!(feature = "nearshell") {
         return source.into();
     }
     // Preserve protocol tags, identifiers and filenames; replace the command
@@ -62,7 +62,7 @@ pub fn schema(value: &mut serde_json::Value) {
 /// Managed distributions must never use upstream's downloader or installer:
 /// those target herdr-core/hc paths belonging to the user's own installation.
 pub fn upstream_distribution() -> Result<(), crate::rpc::RpcError> {
-    if cfg!(feature = "managed") {
+    if cfg!(feature = "nearshell") {
         return Err(crate::rpc::RpcError::new(
             "managed_distribution",
             "this build is distributed with Nearshell",
@@ -76,7 +76,7 @@ pub fn upstream_distribution() -> Result<(), crate::rpc::RpcError> {
 mod tests {
     use super::*;
     #[test]
-    #[cfg(feature = "managed")]
+    #[cfg(feature = "nearshell")]
     fn managed_command_is_nhc() {
         assert_eq!(COMMAND, "nhc");
         assert_eq!(VERSION_PREFIX, "nhc ");

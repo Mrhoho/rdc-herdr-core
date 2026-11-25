@@ -10,14 +10,18 @@ name = "herdr-core"
 path = "src/main.rs"
 
 [features]
-managed = ["dep:sha2"]
-# Never distribute this build: path overrides are deliberately test-only.
-managed-test = ["managed"]
+# Identity isolation: nhc naming, private addressing, no upstream distribution.
+nearshell = []
+# The App-owned hub core: nearshell plus owner lifecycle and [programs].
+managed = ["nearshell", "dep:sha2"]
+# Never distribute these builds: path overrides are deliberately test-only.
+nearshell-test = ["nearshell"]
+managed-test = ["managed", "nearshell-test"]
 
 [[bin]]
 name = "nhc"
 path = "src/nearshell_main.rs"
-required-features = ["managed"]
+required-features = ["nearshell"]
 
 [dependencies]
 sha2 = { version = "0.10", optional = true }

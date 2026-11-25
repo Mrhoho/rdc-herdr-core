@@ -27,11 +27,11 @@ pub(super) fn from_env() -> Result<Paths, RpcError> {
         return Err(invalid());
     }
     let parent = socket.parent().ok_or_else(invalid)?;
-    #[cfg(feature = "managed-test")]
+    #[cfg(feature = "nearshell-test")]
     if !socket.starts_with(&root) {
         return Err(invalid());
     }
-    #[cfg(not(feature = "managed-test"))]
+    #[cfg(not(feature = "nearshell-test"))]
     {
         let suffix = if env!("NEARSHELL_CORE_CONFIG").starts_with("release:") { "r" } else { "d" };
         let expected = crate::platform::managed_socket_dir(suffix);
@@ -49,7 +49,7 @@ pub(super) fn from_env() -> Result<Paths, RpcError> {
 }
 
 fn root() -> Result<PathBuf, RpcError> {
-    #[cfg(feature = "managed-test")]
+    #[cfg(feature = "nearshell-test")]
     {
         let root = std::env::var_os("NEARSHELL_HC_TEST_ROOT").map(PathBuf::from).ok_or_else(invalid)?;
         if !root.is_absolute() || root.components().any(|p| matches!(p, std::path::Component::ParentDir)) {
@@ -57,7 +57,7 @@ fn root() -> Result<PathBuf, RpcError> {
         }
         Ok(root)
     }
-    #[cfg(not(feature = "managed-test"))]
+    #[cfg(not(feature = "nearshell-test"))]
     {
         Ok(crate::platform::account_home()
             .map_err(|_| invalid())?

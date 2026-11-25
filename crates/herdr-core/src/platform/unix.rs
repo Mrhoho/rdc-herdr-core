@@ -898,7 +898,7 @@ pub mod console {
 }
 
 /// Current account's home, independent of a terminal program's HOME/XDG.
-#[cfg(all(feature = "managed", not(feature = "managed-test")))]
+#[cfg(all(feature = "nearshell", not(feature = "nearshell-test")))]
 pub fn account_home() -> io::Result<PathBuf> {
     use std::os::unix::ffi::OsStrExt;
     let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
@@ -917,13 +917,13 @@ pub fn account_home() -> io::Result<PathBuf> {
     Ok(path)
 }
 
-#[cfg(all(feature = "managed", not(feature = "managed-test")))]
+#[cfg(all(feature = "nearshell", not(feature = "nearshell-test")))]
 pub fn managed_socket_dir(suffix: &str) -> PathBuf {
     PathBuf::from(format!("/tmp/nearshell-{}-{suffix}", unsafe { libc::getuid() }))
 }
 
 /// Never repair or follow an existing directory of unknown ownership/mode.
-#[cfg(feature = "managed")]
+#[cfg(feature = "nearshell")]
 pub fn managed_private_dir(path: &Path) -> io::Result<()> {
     use std::os::unix::fs::{DirBuilderExt, MetadataExt};
     match std::fs::DirBuilder::new().mode(0o700).create(path) {
