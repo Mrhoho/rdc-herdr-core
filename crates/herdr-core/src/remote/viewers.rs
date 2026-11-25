@@ -16,6 +16,7 @@ pub struct Relayed {
     pub params: Value,
     pub active_at: Instant,
     pub size_pending: bool,
+    pub(crate) relay: relay::Shared,
 }
 
 /// Why an opted-in stream was refused: a hop on the way lost resize support.
@@ -40,7 +41,7 @@ pub(super) async fn reattach(core: Arc<Core>, m: Machine, line: Arc<Line>) {
         params["resumed"] = true.into();
         negotiate_resize(&line, &mut params);
         let deadline = deadline_for(&core, "terminal.attach", &params);
-        let sink = ((r.conn.clone(), here), r.params["resize_notifications"] == true);
+        let sink = ((r.conn.clone(), here, r.relay.clone()), r.params["resize_notifications"] == true);
         let reply = line.call_into(&m.name, "terminal.attach", params, Some(sink), deadline).await;
         let lost_resize = matches!(&reply, Err(e) if e.message == RESIZE_LOST);
         let mut st = core.lock();
@@ -52,6 +53,10 @@ pub(super) async fn reattach(core: Arc<Core>, m: Machine, line: Arc<Line>) {
             }
             continue;
         };
+        // Its line went meanwhile, whatever it answered: the next line brings it back.
+        if !lost_resize && went(&st, &m, &line) {
+            continue;
+        }
         let reply = reply.ok();
         if r.automatic_input && reply.as_ref().is_some_and(|reply| !automatic_input(&line, reply)) {
             st.relayed.remove(&key);
@@ -107,6 +112,67 @@ pub(super) async fn reattach(core: Arc<Core>, m: Machine, line: Arc<Line>) {
     }
 }
 
+/// A frame on a stream there that a viewer here is relayed from.
+pub(super) fn relay_out(core: &Core, line: &Line, there: u32, kind: u8, payload: &[u8]) {
+    // Taken out before anything else is locked: elsewhere the core's state
+    // is locked first and a line's streams after it.
+    let sink = match kind {
+        wire::CLOSE => lock(&line.streams).remove(&there),
+        _ => lock(&line.streams).get(&there).cloned(),
+    };
+    let Some(sink) = sink else { return };
+    let (conn, here) = (&sink.0, sink.1);
+    match kind {
+        wire::DATA => deliver(&sink, payload),
+        wire::RESIZE if payload.len() == 4 => conn.with(|out| out.ordered_resize(here, payload)),
+        wire::CLOSE => {
+            core.lock().relayed.remove(&(conn_key(conn), here));
+            conn.with(|out| out.finish(here, payload));
+        }
+        _ => {}
+    }
+}
+
+/// Viewers here hear that the line is gone and stay open; the programs keep
+/// running there, and the viewers get them back with the line.
+pub(super) fn lost_line(line: &Line, machine: &str) {
+    let notice = lost_notice(machine);
+    let sinks: Vec<Sink> = lock(&line.streams).drain().map(|(_, sink)| sink).collect();
+    for sink in &sinks {
+        deliver(sink, notice.as_bytes());
+    }
+}
+
+/// Bytes into a relayed viewer's stream, counted for its credit.
+fn deliver((conn, here, relay): &Sink, bytes: &[u8]) {
+    let mut relay = lock(relay);
+    let mut back = 0;
+    conn.with(|out| {
+        if !out.has_stream(*here) {
+            return;
+        }
+        let queued = out.queued(*here);
+        // Too far behind, it drops what it had not sent; nothing here paints
+        // it again, but the stream there gets back what was its share.
+        let dropped = if out.data(*here, bytes) { 0 } else { queued + bytes.len() };
+        relay.ledger.enqueued(bytes.len());
+        back = relay.ledger.dropped(dropped);
+    });
+    if back > 0
+        && let Some((frames, there)) = &relay.to
+    {
+        let _ = frames.send(wire::encode(*there, wire::CREDIT, &back.to_le_bytes()));
+    }
+}
+
+/// Whether `line` is no longer the one to the machine: closed, its writer
+/// gone, or another dialed meanwhile (an abandoned line may never answer).
+fn went(st: &State, m: &Machine, line: &Arc<Line>) -> bool {
+    line.closed.load(Ordering::Relaxed)
+        || line.frames.is_closed()
+        || st.lines.get(&m.id).is_some_and(|now| !matches!(now, LineState::Connected(l) if Arc::ptr_eq(l, line)))
+}
+
 fn resend_size(viewer: &Relayed) {
     let cols = viewer.params["cols"].as_u64().unwrap_or_default() as u16;
     let rows = viewer.params["rows"].as_u64().unwrap_or_default() as u16;
@@ -145,6 +211,7 @@ pub async fn attach(core: &Core, conn: &Arc<Conn>, m: &Machine, mut params: Valu
     let line = line(core, m).await?;
     negotiate_resize(&line, &mut params);
     let here = conn.new_channel();
+    let relay = relay::Shared::default();
     {
         let st = core.lock();
         conn.admit(&st)?;
@@ -152,7 +219,13 @@ pub async fn attach(core: &Core, conn: &Arc<Conn>, m: &Machine, mut params: Valu
     }
     let deadline = deadline_for(core, "terminal.attach", &params);
     match line
-        .call_into(&m.name, "terminal.attach", params.clone(), Some(((conn.clone(), here), false)), deadline)
+        .call_into(
+            &m.name,
+            "terminal.attach",
+            params.clone(),
+            Some(((conn.clone(), here, relay.clone()), false)),
+            deadline,
+        )
         .await
     {
         Ok(mut r) => {
@@ -184,6 +257,7 @@ pub async fn attach(core: &Core, conn: &Arc<Conn>, m: &Machine, mut params: Valu
                     params,
                     active_at: Instant::now(),
                     size_pending: false,
+                    relay,
                 };
                 st.relayed.insert((conn_key(conn), here), viewer);
             }
@@ -221,9 +295,19 @@ pub fn relay_in(core: &Core, conn: &Arc<Conn>, here: u32, kind: u8, payload: &[u
     {
         r.params["display"] = display;
     }
-    // Read here: our stream to the viewer may send more, and so may the one there to us.
+    // Read here: our stream to the viewer may send more, and so may the one
+    // there to us, by what was its own.
     if kind == wire::CREDIT && payload.len() == 4 {
-        conn.with(|out| out.credit(here, u32::from_le_bytes(payload.try_into().unwrap()) as usize));
+        let bytes = u32::from_le_bytes(payload.try_into().unwrap());
+        conn.with(|out| out.credit(here, bytes as usize));
+        let mut relay = lock(&r.relay);
+        let more = relay.ledger.credited(bytes);
+        if more > 0
+            && let Some((frames, there)) = &relay.to
+        {
+            let _ = frames.send(wire::encode(*there, wire::CREDIT, &more.to_le_bytes()));
+        }
+        return true;
     }
     // While the line is down this goes nowhere: typing into a gap is lost, not queued.
     let _ = r.line.frames.send(wire::encode(r.there, kind, payload));

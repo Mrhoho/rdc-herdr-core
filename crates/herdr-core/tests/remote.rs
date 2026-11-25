@@ -760,6 +760,50 @@ fn a_viewer_rides_out_a_dropped_line_without_reattaching() {
 }
 
 #[test]
+fn a_viewer_back_on_a_new_line_gives_the_stream_there_only_its_own_window() {
+    use herdr_core::wire::{CREDIT, WINDOW};
+    let rohan = Session::new();
+    let mut s = Session::new();
+    let (ssh, line_pid) = recording_ssh(&s, &rohan);
+    s.env.push(("HC_SSH".into(), ssh));
+    s.env.push(("HC_RECONNECT_MS".into(), "200".into()));
+    s.json(&["machine", "add", "rohan"]);
+    let fill = |c: char| format!("head -c 600000 /dev/zero | tr '\\0' {c}");
+    let body = script(&rohan, &format!("w go1; {}; w go2; {}; echo; echo filled; sleep 100", fill('x'), fill('y')));
+    let t = run(&s, &["--on", "rohan", "sh", "-c", &body]);
+    let mut v = Viewer::attach(&s, &t, 100, 30, json!({}));
+    v.credit = false; // it reads, but tells nobody
+    touch(&rohan, "go1");
+    v.until("a window of output", |v| v.received >= WINDOW);
+    let cut = || {
+        let line = std::fs::read_to_string(&line_pid).unwrap();
+        assert_eq!(unsafe { libc::kill(line.trim().parse().unwrap(), libc::SIGKILL) }, 0);
+        wait_until("a new line", || std::fs::read_to_string(&line_pid).unwrap() != line);
+    };
+    cut();
+    wait_until("the viewer reattached there", || {
+        v.typed(b"probe");
+        text(&rohan, "t1").contains("probe")
+    });
+    // Credit for what the old stream sent: not the new stream's to spend.
+    v.conn.send(v.channel, CREDIT, &(WINDOW as u32).to_le_bytes());
+    touch(&rohan, "go2");
+    wait_until("all output there", || text(&rohan, "t1").contains("filled"));
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    cut(); // what the new stream sent is all here now
+    v.conn.send(v.channel, CREDIT, &(64u32 << 20).to_le_bytes());
+    let notice = b"\x18\r\n[line to rohan lost; reconnecting...]\r\n";
+    let notices = |raw: &[u8]| raw.windows(notice.len()).filter(|w| *w == notice).count();
+    v.until("the second notice", |v| notices(&v.raw) == 2);
+    let at: Vec<usize> = (0..v.raw.len()).filter(|i| v.raw[*i..].starts_with(notice)).collect();
+    let sent = at[1] - at[0] - notice.len();
+    assert!(sent <= WINDOW, "the stream there sent {sent} bytes on a {WINDOW}-byte window");
+    if !slow_runner() {
+        assert!(sent > WINDOW / 2, "the stream there used its window: {sent}");
+    }
+}
+
+#[test]
 fn returning_viewers_keep_the_last_active_viewers_size() {
     let (rohan, s) = with_rohan();
     let mark = rohan.root.join("mark");

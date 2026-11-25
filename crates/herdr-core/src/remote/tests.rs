@@ -153,6 +153,7 @@ async fn automatic_input_survives_relays_but_not_a_capability_downgrade() {
                 terminal: "t1".into(),
                 params: json!({"terminal": "t1"}),
                 size_pending: false,
+                relay: Default::default(),
             },
         );
         assert!(relay_in(&core, &conn, 7, wire::AUTOMATIC_INPUT, b"\x1b"));
@@ -217,6 +218,7 @@ async fn reattach_applies_missed_sizes_without_replaying_delivered_activity() {
                 terminal: target.into(),
                 params: json!({"terminal": target, "cols": 80, "rows": 24}),
                 size_pending: false,
+                relay: Default::default(),
             },
         );
     }
@@ -272,7 +274,7 @@ async fn reconnect_rejects_downgrade_before_mapping_fallback_data() {
                     "relay",
                     "terminal.attach",
                     json!({"observe": true, "resumed": true, "resize_notifications": true}),
-                    Some(((sink, 7), true)),
+                    Some(((sink, 7, Default::default()), true)),
                     Duration::from_secs(1),
                 )
                 .await
@@ -281,7 +283,7 @@ async fn reconnect_rejects_downgrade_before_mapping_fallback_data() {
         let request: Value = serde_json::from_slice(&request[wire::HEADER..]).unwrap();
         line.take_reply(json!({"id": request["id"], "result": {"channel": 9, "resize_notifications": false}}));
         // Model buffered DATA consumed before the awakened caller can run.
-        if let Some((sink, here)) = lock(&line.streams).get(&9) {
+        if let Some((sink, here, _)) = lock(&line.streams).get(&9) {
             sink.with(|out| {
                 out.data(*here, b"unsupported fallback paint");
             });
@@ -345,6 +347,7 @@ async fn failed_reattach_drains_pending_data_before_close() {
             terminal: "t1".into(),
             params: json!({"terminal": "t1"}),
             size_pending: false,
+            relay: Default::default(),
         },
     );
     drop(old_rx); // The viewer survives its old line.
@@ -517,6 +520,7 @@ async fn late_remote_attach_and_reattach_close_the_remote_stream() {
                     params: params.clone(),
                     active_at: std::time::Instant::now(),
                     size_pending: false,
+                    relay: Default::default(),
                 },
             );
         }
@@ -557,7 +561,7 @@ fn abandoned_remote_reply_never_retains_a_sink() {
     // Reply arrived just as the waiter was dropped.
     let (tx, waiter) = oneshot::channel();
     drop(waiter);
-    lock(&line.pending).insert(11, (tx, Some(((Arc::new(Conn::default()), 1), false))));
+    lock(&line.pending).insert(11, (tx, Some(((Arc::new(Conn::default()), 1, Default::default()), false))));
     line.take_reply(json!({"id":11, "result":{"channel":8}}));
     assert!(lock(&line.streams).is_empty());
     assert_eq!(
@@ -571,7 +575,7 @@ fn duplicate_remote_reply_does_not_close_an_active_stream() {
     let (frames, mut rx) = mpsc::unbounded_channel();
     let line = Line::new(frames, &json!({}));
     let (tx, _waiter) = oneshot::channel();
-    lock(&line.pending).insert(1, (tx, Some(((Arc::new(Conn::default()), 2), false))));
+    lock(&line.pending).insert(1, (tx, Some(((Arc::new(Conn::default()), 2, Default::default()), false))));
     let reply = json!({"id":1, "result":{"channel":7}});
     line.take_reply(reply.clone());
     line.take_reply(reply);
@@ -579,4 +583,151 @@ fn duplicate_remote_reply_does_not_close_an_active_stream() {
     lock(&line.mirror).1 = Some(8);
     line.take_reply(json!({"id":2, "result":{"channel":8}}));
     assert!(rx.try_recv().is_err());
+}
+
+/// A viewer here on `away/t1`, attached the way `attach` leaves it, and its machine's lines.
+struct Attached {
+    core: Arc<Core>,
+    root: std::path::PathBuf,
+    machine: Machine,
+    conn: Arc<Conn>,
+    here: u32,
+}
+
+type Frames = mpsc::UnboundedReceiver<Vec<u8>>;
+
+impl Attached {
+    /// Attached over a first line, whose stream there is `there`.
+    async fn new(there: u32) -> (Attached, Arc<Line>, Frames) {
+        let root = crate::test_tmp().join(format!("hc-relay-{}-{}", std::process::id(), crate::platform::random_hex()));
+        let paths = Paths {
+            socket: root.join("core.sock"),
+            holder_socket: root.join("holder.sock"),
+            state: root.clone(),
+            config: root.join("config.toml"),
+        };
+        paths.create_dirs().unwrap();
+        let core = Core::start(paths, crate::api::CoreInfo { id: "here".into(), name: "here".into() }).unwrap();
+        let machine: Machine = serde_json::from_value(json!({
+            "name": "away", "target": "away", "id": "away", "host": "away", "version": "test"
+        }))
+        .unwrap();
+        let mut f = Attached { core, root, machine, conn: Arc::new(Conn::default()), here: 0 };
+        let (line, mut rx) = f.up();
+        let (c, conn, m) = (f.core.clone(), f.conn.clone(), f.machine.clone());
+        let task = tokio::spawn(async move { attach(&c, &conn, &m, json!({"terminal": "t1"})).await });
+        let request: Value = serde_json::from_slice(&rx.recv().await.unwrap()[wire::HEADER..]).unwrap();
+        line.take_reply(json!({"id": request["id"], "result": {"channel": there}}));
+        f.here = task.await.unwrap().unwrap()["channel"].as_u64().unwrap() as u32;
+        f.conn.with(|out| out.resume(f.here));
+        (f, line, rx)
+    }
+
+    /// A new line comes up: the machine's line from now on.
+    fn up(&self) -> (Arc<Line>, Frames) {
+        let (frames, rx) = mpsc::unbounded_channel();
+        let line = Line::new(frames, &json!({}));
+        self.core.lock().lines.insert(self.machine.id.clone(), LineState::Connected(line.clone()));
+        (line, rx)
+    }
+
+    /// What `hold` does once a line has dropped.
+    fn drop_line(&self, line: &Line) {
+        self.core.lock().lines.insert(self.machine.id.clone(), LineState::Connecting);
+        line.close();
+        lost_line(line, &self.machine.name);
+    }
+
+    /// The viewers waiting for `line`, reattached up to the call that brings this one back.
+    async fn reattaching(&self, line: &Arc<Line>, rx: &mut Frames) -> (tokio::task::JoinHandle<()>, Value) {
+        let task = tokio::spawn(reattach(self.core.clone(), self.machine.clone(), line.clone()));
+        let request: Value = serde_json::from_slice(&rx.recv().await.unwrap()[wire::HEADER..]).unwrap();
+        assert_eq!(request["method"], "terminal.attach");
+        (task, request["id"].clone())
+    }
+
+    fn credit(&self, bytes: usize) {
+        assert!(relay_in(&self.core, &self.conn, self.here, wire::CREDIT, &(bytes as u32).to_le_bytes()));
+    }
+
+    /// What the viewer is sent from now on, in the order it gets it.
+    fn sent(&self) -> Vec<(u8, Vec<u8>)> {
+        let mut frames = Vec::new();
+        self.conn.with(|out| {
+            out.credit(self.here, 1 << 30);
+            while let Some(frame) = out.next_frame() {
+                let (_, kind, _) = wire::decode_header(frame[..wire::HEADER].try_into().unwrap()).unwrap();
+                frames.push((kind, frame[wire::HEADER..].to_vec()));
+            }
+        });
+        frames
+    }
+}
+
+impl Drop for Attached {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+/// The credits sent on a line so far: (channel there, bytes).
+fn credits(rx: &mut Frames) -> Vec<(u32, u32)> {
+    let mut credits = Vec::new();
+    while let Ok(frame) = rx.try_recv() {
+        let (channel, kind, _) = wire::decode_header(frame[..wire::HEADER].try_into().unwrap()).unwrap();
+        if kind == wire::CREDIT {
+            credits.push((channel, u32::from_le_bytes(frame[wire::HEADER..].try_into().unwrap())));
+        }
+    }
+    credits
+}
+
+#[tokio::test]
+async fn a_reattached_stream_is_credited_only_for_its_own_bytes_from_its_first() {
+    let (f, old, _old_rx) = Attached::new(9).await;
+    relay_out(&f.core, &old, 9, wire::DATA, &[b'x'; 1000]);
+    f.drop_line(&old);
+    let (line, mut rx) = f.up();
+    let (task, id) = f.reattaching(&line, &mut rx).await;
+    line.take_reply(json!({"id": id, "result": {"channel": 17}}));
+    // Read by the line right after the reply, before the reattach runs.
+    relay_out(&f.core, &line, 17, wire::DATA, b"paint");
+    task.await.unwrap();
+    // The viewer reads it all: the old stream's bytes and the notice were paid for by the old stream.
+    f.credit(1000 + lost_notice("away").len() + 5);
+    assert_eq!(credits(&mut rx), [(17, 5)]);
+}
+
+#[tokio::test]
+async fn a_credit_sent_before_the_reattach_runs_reaches_the_new_stream() {
+    let (f, old, mut old_rx) = Attached::new(9).await;
+    f.drop_line(&old);
+    let (line, mut rx) = f.up();
+    let (task, id) = f.reattaching(&line, &mut rx).await;
+    line.take_reply(json!({"id": id, "result": {"channel": 17}}));
+    relay_out(&f.core, &line, 17, wire::DATA, b"paint");
+    f.credit(lost_notice("away").len() + 5);
+    task.await.unwrap();
+    assert_eq!(credits(&mut old_rx), [], "the old line is gone");
+    assert_eq!(credits(&mut rx), [(17, 5)]);
+}
+
+#[tokio::test]
+async fn a_line_lost_while_reattaching_leaves_the_viewer_for_the_next_line() {
+    let (f, old, _old_rx) = Attached::new(9).await;
+    f.drop_line(&old);
+    let (line, mut rx) = f.up();
+    let (task, _) = f.reattaching(&line, &mut rx).await;
+    f.drop_line(&line); // before it answered
+    task.await.unwrap();
+    assert!(f.core.lock().relayed.contains_key(&(conn_key(&f.conn), f.here)), "the viewer waits");
+    let (line, mut rx) = f.up();
+    let (task, id) = f.reattaching(&line, &mut rx).await;
+    line.take_reply(json!({"id": id, "result": {"channel": 21}}));
+    task.await.unwrap();
+    relay_out(&f.core, &line, 21, wire::DATA, b"back");
+    let sent = f.sent();
+    assert!(sent.iter().all(|(kind, _)| *kind == wire::DATA), "still open: {sent:?}");
+    let data: Vec<u8> = sent.into_iter().flat_map(|(_, bytes)| bytes).collect();
+    assert!(data.ends_with(b"back"));
 }

@@ -19,18 +19,20 @@ use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, oneshot};
 
-/// A viewer here that a stream there goes to: its connection and channel.
-type Sink = (Arc<Conn>, u32);
+/// A viewer here that a stream there goes to: its connection, channel, and
+/// the state it shares with its record.
+type Sink = (Arc<Conn>, u32, relay::Shared);
 /// A pending reply, its stream sink and whether resize support is required.
 type Waiting = (oneshot::Sender<Value>, Option<(Sink, bool)>);
 
 mod put;
+mod relay;
 mod run;
 mod viewers;
 use run::forward_once;
 #[cfg(test)]
 use viewers::automatic_input;
-use viewers::{RESIZE_LOST, negotiate_resize, reattach};
+use viewers::{RESIZE_LOST, lost_line, negotiate_resize, reattach, relay_out};
 pub use viewers::{Relayed, attach, conn_gone, relay_in};
 
 #[cfg(test)]
@@ -102,6 +104,7 @@ impl Line {
                     Err(RpcError::new("unavailable", RESIZE_LOST, "attach again")),
                 );
             } else {
+                lock(&sink.2).switch(&self.frames, there as u32);
                 lock(&self.streams).insert(there as u32, sink);
             }
         }
@@ -458,25 +461,7 @@ async fn hold(core: &Arc<Core>, m: &Machine, mut d: crate::machines::Dialed) {
                 mirror_events(core, m, &line, &payload);
                 let _ = line.frames.send(wire::encode(there, wire::CREDIT, &(payload.len() as u32).to_le_bytes()));
             }
-            (there, wire::DATA) => {
-                if let Some((conn, here)) = lock(&line.streams).get(&there) {
-                    conn.with(|out| {
-                        out.data(*here, &payload);
-                    });
-                }
-            }
-            (there, wire::RESIZE) if payload.len() == 4 => {
-                if let Some((conn, here)) = lock(&line.streams).get(&there) {
-                    conn.with(|out| out.ordered_resize(*here, &payload));
-                }
-            }
-            (there, wire::CLOSE) => {
-                if let Some((conn, here)) = lock(&line.streams).remove(&there) {
-                    core.lock().relayed.remove(&(conn_key(&conn), here));
-                    conn.with(|out| out.finish(here, &payload));
-                }
-            }
-            _ => {}
+            (there, kind) => relay_out(core, &line, there, kind, &payload),
         }
     }
     writer.abort();
@@ -491,14 +476,7 @@ async fn hold(core: &Arc<Core>, m: &Machine, mut d: crate::machines::Dialed) {
     }
     // Calls still waiting on it fail now ("lost the line"), not at their deadline.
     line.close();
-    // Viewers here hear that the line is gone and stay open; the programs keep
-    // running there, and the viewers get them back with the line.
-    let notice = lost_notice(&m.name);
-    for (_, (conn, here)) in lock(&line.streams).drain() {
-        conn.with(|out| {
-            out.data(here, notice.as_bytes());
-        });
-    }
+    lost_line(&line, &m.name);
     // Killed, not waited for: a Mac core once never heard the old ssh had
     // died and stayed "connecting" for good. It is reaped in the background.
     let _ = d.child.start_kill();
