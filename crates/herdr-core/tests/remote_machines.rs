@@ -115,6 +115,9 @@ fn each_remote_build_gets_its_outcome_and_only_connect_redials() {
         match w.rpc("machine.add", json!({"target": "far"})) {
             Ok(m) => {
                 assert_eq!((kind, &m["build"]), ("ok", &cur_b));
+                // Its line dials on its own: one still starting up when the
+                // far core stops would start that core again.
+                w.state_becomes("far", "connected");
                 w.rpc("machine.rm", json!({"machine": "far"})).unwrap();
             }
             Err(e) => assert_eq!(e.kind, kind, "{e:?}"),
