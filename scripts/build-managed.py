@@ -30,6 +30,15 @@ def git(repo, *args):
 
 
 def validate_identity(commit, patchset, release_seq, config, bundle_id, identity, timestamp):
+    validate_build(commit, patchset, release_seq, config, bundle_id)
+    if not identity:
+        raise ValueError("signing identity is required; use '-' explicitly for ad-hoc")
+    if identity == "-" and timestamp:
+        raise ValueError("ad-hoc signing cannot request a trusted timestamp")
+
+
+def validate_build(commit, patchset, release_seq, config, bundle_id):
+    """The build identity inputs, shared with build-remote.py."""
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise ValueError("commit must be a full lowercase 40-character object ID")
     if not 0 < release_seq < 2**64:
@@ -40,10 +49,6 @@ def validate_identity(commit, patchset, release_seq, config, bundle_id, identity
         raise ValueError("config must be release or dev")
     if not re.fullmatch(r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+", bundle_id):
         raise ValueError("bundle-id must be an explicit reverse-domain identifier")
-    if not identity:
-        raise ValueError("signing identity is required; use '-' explicitly for ad-hoc")
-    if identity == "-" and timestamp:
-        raise ValueError("ad-hoc signing cannot request a trusted timestamp")
 
 
 def check_tree(repo, commit):

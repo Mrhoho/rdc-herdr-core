@@ -33,7 +33,7 @@ test:
 # Format and clippy only (seconds once built). Windows is type-checked with zig stubbed.
 [unix]
 lint:
-    python3 -B -m unittest discover -s scripts -p test_managed_release.py
+    python3 -B -m unittest discover -s scripts -p 'test_*_release.py'
     cargo fmt --all -- --check
     cargo deny check
     cargo clippy --locked --all-targets -- -D warnings
@@ -124,3 +124,14 @@ managed-check:
 [positional-arguments]
 managed-release *args:
     python3 -B scripts/build-managed.py "$@"
+
+# Linux remote nhc (nearshell-test) contract tests, including an independent default-build hc.
+[linux]
+remote-check:
+    sh scripts/check-remote.sh
+
+# One locked remote nhc for a Linux target; see docs/nearshell-build.md for required arguments.
+[unix]
+[positional-arguments]
+remote-release *args:
+    python3 -B scripts/build-remote.py "$@"

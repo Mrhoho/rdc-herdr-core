@@ -1,14 +1,14 @@
 # Nearshell 构建与 CLI 契约
 
-状态：A1–A5 已实现；发行前须通过锁定源码构建与组 A 契约矩阵。日期：2026-10-30。
+状态：A1–A5 已实现；Linux 远端构建（寻址、生命周期、程序环境、`build-remote.py`）已实现，拨号、版本校验与远端安装尚未实现。发行前须通过锁定源码构建与组 A 契约矩阵。日期：2026-11-25。
 
-目标：保持默认构建的上游命令与寻址行为，提供独立的 Nearshell 分发身份和私有路径。连接生命周期修复及附加的 build 字段适用于两种构建。
+目标：保持默认构建的上游命令与寻址行为，提供独立的 Nearshell 分发身份和私有路径。连接生命周期修复及附加的 build 字段适用于所有构建。
 
 ## 构建
 
 默认 `cargo build --bin herdr-core` 保持 `hc` 命令名称及 HC_SESSION、HC_SOCKET、XDG 规则。
 
-Nearshell 使用 `cargo build --locked --features managed --bin nhc`（当前只支持 macOS）。`managed` 隐含 `nearshell`：`nearshell` 负责身份隔离（`nhc` 命名、私有寻址、拒绝地址覆盖、禁用上游分发、构建身份必填与 `config` 后缀，`nhc` 目标也只要求它）；`managed` 再加 owner 生命周期与 `[programs]` 程序环境。只开 `nearshell` 不开 `managed` 的构建目前由 `build.rs` 拒绝。必须在构建环境指定：
+Nearshell 使用 `cargo build --locked --features managed --bin nhc`（只支持 macOS）。`managed` 隐含 `nearshell`：`nearshell` 负责身份隔离（`nhc` 命名、私有寻址、拒绝地址覆盖、禁用上游分发、构建身份必填与 `config` 后缀，`nhc` 目标也只要求它）；`managed` 再加 owner 生命周期与 `[programs]` 程序环境。只开 `nearshell` 不开 `managed` 的是[远端构建](#远端构建linux)，`build.rs` 只允许 Linux 目标，其他目标构建失败。必须在构建环境指定：
 
 | 变量 | 契约 |
 |---|---|
@@ -18,7 +18,7 @@ Nearshell 使用 `cargo build --locked --features managed --bin nhc`（当前只
 | `NEARSHELL_CORE_CONFIG` | `dev` 或 `release` |
 | `NEARSHELL_CORE_BUNDLE_ID` | 对应 App 的 bundle ID；Dev 必须与 Release 分开 |
 
-`build-info --json` 直接输出 `{commit, patchset, releaseSeq, config}`；不解析路径、不连 core、不自启，运行时同名环境变量不能改变它。`hello.build` 与 `server.status.build` 描述正在运行的二进制。`config` 包含配置种类和 bundle ID；测试构建再带 `:scratch-test`。未提供发行参数的默认开发构建是 `unversioned` / `a1-dev` / 0 / `upstream`，不得当作发行身份。身份不是签名或内容哈希，后续 App 仍须验证发行物。
+`build-info --json` 直接输出 `{commit, patchset, releaseSeq, config}`；不解析路径、不连 core、不自启，运行时同名环境变量不能改变它。`hello.build` 与 `server.status.build` 描述正在运行的二进制。`config` 为 `<dev|release>:<bundle-id>`，远端构建再带 `:remote`，测试构建的 `:scratch-test` 始终在最后（`dev:<bundle-id>:remote:scratch-test`）。格式只在 `crates/herdr-core/src/build_identity.rs` 写一次，`build.rs` 直接引用它。未提供发行参数的默认开发构建是 `unversioned` / `a1-dev` / 0 / `upstream`，不得当作发行身份。身份不是签名或内容哈希，后续 App 仍须验证发行物。
 
 Cargo 启用 feature 会影响整个 crate；分发时只取 `cargo build --bin nhc` 指定的产物，不分发同次构建的 `herdr-core`。
 
@@ -38,13 +38,57 @@ HC_SESSION、HC_SOCKET 只要存在（包括空值）就返回 `managed_address_
 
 ## 命名与隔离
 
-managed CLI 的版本前缀、help、skill、固定提示与内置模板说明使用 `nhc`。用户模板、程序输出、协议标签与数据键保持原值。远端拨号不再回退 `hc` 或 `herdr-core`；上游下载器及向上游安装目录复制二进制的功能返回 `managed_distribution`，防止写入用户自装副本。A2 的 owner 鉴权、禁止自启及程序环境契约见下文。
+Nearshell CLI 的版本前缀、help、skill、固定提示与内置模板说明使用 `nhc`。用户模板、程序输出、协议标签与数据键保持原值。远端拨号不再回退 `hc` 或 `herdr-core`；上游下载器及向上游安装目录复制二进制的功能返回 `managed_distribution`，防止写入用户自装副本；`update` 不带 `--from` 在任何动作之前就返回它（上游会先重启较旧的 core）。A2 的 owner 鉴权、禁止自启及程序环境契约见下文。
+
+所有 Nearshell 构建使用自己的名字：systemd 单元 `nearshell-<serve|hold>-<随机>` 与关机守护单元 `nearshell-shutdown-<hash>.service`，“没有 systemd 用户管理器”的提示以 `nhc:` 开头，替换二进制的临时文件为 `.nhc.new.<pid>`，远端“未安装”标记为 `the Nearshell remote core is not installed here`，`hc_missing` 的提示指向在 Nearshell 里添加机器。默认构建保持 `hc-…`、`.herdr-core.new.*` 与上游文案。
+
+测试钩子与计时变量（`HC_SSH`、`HC_HOLDER_GRACE_MS`、`HC_RECONNECT_MS`、`HC_SPAWN_MS`、`HC_HEARTBEAT_MS`、`HC_FOREGROUND_MS`、`HC_RETAIN_MS`、`HC_READY_MS`、`HC_STITCH_MS`、`HC_QUIET_MS`、`HC_DRAFT_MS`、`HC_STARTED_MS`、`HC_SETTLE_MS`、`HC_IMAGE_ANSWER_MS`）统一经 `tuning` 读取：非测试的 Nearshell 构建（managed 与远端）一律忽略，测试构建与默认构建照旧。
 
 ## 连接与验证
 
 连接关闭在 Core 状态锁下撤销 admission 并回收 viewer/订阅；迟到的 attach/subscribe 返回 `connection_closed`，不能重新登记。已受理的其他 RPC 保留原有完成语义，死连接上的迟到回复被丢弃。headless 尺寸恢复及队列回收由确定性测试覆盖。
 
-默认验证：`cargo test --locked`、`just check`、`just docs-check`。额外验证 managed 代码：`cargo test --locked -p herdr-core --features managed-test --lib --test managed`。上游集成套件刻意使用 HC_SESSION，不适用于 managed feature；单独运行默认套件及上述 managed 套件。
+默认验证：`cargo test --locked`、`just check`、`just docs-check`。额外验证 managed 代码：`cargo test --locked -p herdr-core --features managed-test --lib --test managed`。远端构建在 Linux 上用 `just remote-check`（`scripts/check-remote.sh`）：clippy、lib 单元测试与 `tests/remote_build.rs`。上游集成套件刻意使用 HC_SESSION，不适用于 Nearshell feature；单独运行默认套件及上述两个套件。
+
+## 远端构建（Linux）
+
+`cargo build --locked --features nearshell --bin nhc`（不开 `managed`），只构建 `nhc`。它是被 Mac hub 经 SSH 接入的远端 core：身份隔离同 managed，生命周期与程序环境沿用上游。拨号、版本校验与安装由后续步骤实现，本构建目前只保证在 Linux 上作为一个独立、隔离的 core 运行。
+
+### 地址
+
+| 项 | 位置 |
+|---|---|
+| 根目录 | `<账户 home>/.local/share/nearshell/<bundle-id>/`，新建时 0700 |
+| 二进制（安装后） | `<根>/bin/nhc` |
+| 配置（可选） | `<根>/config/herdr-core/config.toml`，缺失即默认值；模板在同目录的 `templates/` |
+| 状态 | `<根>/state/herdr-core/default/` |
+| socket | `/tmp/nearshell-<uid>-<bundle-id 的 sha256 前 8 位十六进制>/c.sock`，holder socket 在同目录 |
+
+home 取自账户数据库（`getpwuid_r`），不读 `HOME`；XDG 变量不改变任何位置；配置里的 `socket` 不被采纳，拨号端与 core 因此总能算出同一个地址。socket 目录不存在时以 0700 创建；已存在但不属于当前用户、不是 0700 或是符号链接时返回 `nearshell_socket_dir`，不修复。`HC_SESSION`、`HC_SOCKET` 只要存在（包括空值）就返回 `managed_address_override`，`connect --session` 在解析路径之前被拒绝。账户数据库没有可用 home（或测试根缺失、socket 路径超长）返回 `nearshell_address`。
+
+`nearshell-test` 下根目录取自绝对路径 `NEARSHELL_HC_TEST_ROOT`（不存在时以 0700 创建），socket 固定在 `<根>/run/c.sock`；没有这个变量时拒绝运行，不回退产品路径。
+
+### 生命周期
+
+与上游相同：`connect` 及其他普通命令在 core 未运行时启动它（Linux 有 systemd 用户管理器时作为用户服务，否则作为独立进程），holder 在 core 崩溃后把它拉起；`server restart`、`server stop` 不需要 token，重启期间 PTY 由 holder 保留；linger 处理与 `keeps_running_after_logout` 照上游；`restart --fresh` 与重启环境可用。
+
+core 与 holder 的启动环境不继承任何 `HC_*`（只保留 core 自己设置的 `HC_RUNTIME`），包括 SSH 首次启动时从登录 shell 导入的变量；`HC_SESSION`、`HC_SOCKET` 始终列入 systemd 的 `UnsetEnvironment`，用户管理器里的同名变量也进不了服务。重启恢复的环境同样去掉 `HC_*`。
+
+core 仍持有 `core.lock`、但它的 socket 路径已经不存在（`/tmp` 清理工具删除，或登录会话有独立的 `/tmp`）时，等待 15 秒后返回 `nearshell_socket_lost`，提示停止那个 `nhc serve` 进程后重试；以前只报 “core did not stop or start”。
+
+### 程序环境
+
+run、keep（替换 shell）与 exec 走上游的 `child_env` 与 exec 环境，不支持 `[programs]`：core 环境与 per-call env 里的 `HC_*` 先全部去掉，合并后注入 `NEARSHELL_HC=<根>/bin/nhc`，并把 `<根>/bin` 前置到 `PATH`（已有的同名项先移除，`PATH` 缺失时补 `/usr/local/bin:/usr/bin:/bin`），最后 run/keep 加终端身份（`HC_TERMINAL_ID`、`HC_TERMINAL_SOCKET`、`HC_SCOPE`、`PWD`），exec 加 `HC_SCOPE` 与 `PWD`。这些只进入子进程环境，core 自己的环境（重启时保存并恢复）不变。等待型 run 仍注入 `PAGER=cat` 等。用户自己的 `hc` 在远端终端里照常可用并连到用户自己的 core，两边互相看不到对方的终端。
+
+### 构建制品
+
+`scripts/build-remote.py` 与 `build-managed.py` 用同一套干净快照与身份参数（commit、patchset、release-seq、config、bundle-id），另须指定目标（`x86_64-unknown-linux-musl` 或 `aarch64-unknown-linux-musl`），Cargo 缓存目录可选：
+
+```sh
+python3 -B scripts/build-remote.py --commit "$(git rev-parse HEAD)" --patchset <patchset> --release-seq <n> --config dev --bundle-id <bundle-id> --target aarch64-unknown-linux-musl --output <新目录>
+```
+
+产出 `<输出>/nhc-<target>` 与 `manifest.json`，其中 `entry` 为 `{target, file, bytes, sha256, build}`，另记源码 commit、子模块、驱动脚本 hash、工具链与 profile。macOS 上交叉编译、Linux 上原生构建用同一条命令：release profile（strip），rustc 自带的 `rust-lld` 链接，sha1 GNU build id，Cargo home 重映射为 `/nearshell/cargo`；工作区路径本来就是相对路径，因此同一 commit 在同一种主机上换源码目录构建，字节相同。macOS 交叉产物与 Linux 原生产物不保证逐字节相同（两边 `rust-lld` 写入的版本注释与字符串段顺序不同），所以制品只按各自 manifest 的 `sha256` 认定，不跨主机比对。能在本机运行的目标（同架构 Linux）由脚本执行 `build-info --json` 核对；交叉产物的 `build` 按构建参数写入，`executed:false`，真实身份由安装时的候选二进制报告。CI 的 `nearshell.yml` 在 Linux runner 上用 CI 身份原生构建两个目标，`remote` 任务运行 `scripts/check-remote.sh`。
 
 ## Managed program environments (P3)
 

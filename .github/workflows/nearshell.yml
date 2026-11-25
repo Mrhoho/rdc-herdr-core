@@ -1,8 +1,9 @@
 # Nearshell fork only (ci.yml runs upstream's checks for our branches too):
-# the managed nhc contract suite on macOS, and release-profile builds of what
-# the fork ships, kept as short-lived workflow artifacts. Nothing here signs
-# with a certificate, notarizes, publishes or creates a GitHub release; the
-# nhc build is ad-hoc signed with a CI-only identity. See docs/nearshell-build.md.
+# the managed nhc contract suite on macOS, the remote nhc suite on Linux, and
+# release-profile builds of what the fork ships, kept as short-lived workflow
+# artifacts. Nothing here signs with a certificate, notarizes, publishes or
+# creates a GitHub release; the nhc builds carry a CI-only identity (the macOS
+# one ad-hoc signed). See docs/nearshell-build.md.
 name: nearshell
 
 on:
@@ -62,16 +63,48 @@ jobs:
           # ci.yml's macOS thread count: 3 cores, terminals keep their timing.
           RUST_TEST_THREADS: "2"
 
-  # Default flavor (hc) for the machines nhc connects to, as release.yml builds it.
+  # `scripts/check-remote.sh` plus the driver guards: the remote build's
+  # clippy, lib tests and contract suite, beside a frozen default-build hc.
+  remote:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.16.0
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: linux-remote
+          cache-workspace-crates: true
+          cache-bin: false
+          save-if: ${{ env.SAVE_CACHES }}
+      - name: Remote driver guards
+        run: python3 -B -m unittest discover -s scripts -p test_remote_release.py
+      - name: Remote contract suite
+        run: sh scripts/check-remote.sh
+        env:
+          RUST_TEST_THREADS: "4"
+
+  # Linux: the remote nhc through scripts/build-remote.py, natively, with the
+  # same CI-only identity as build-managed. Windows: the default flavor (hc),
+  # as release.yml builds it, until the Windows remote build exists.
   build:
     name: build (${{ matrix.name }})
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { name: linux-x86_64, target: x86_64-unknown-linux-musl, runner: ubuntu-latest }
-          - { name: linux-aarch64, target: aarch64-unknown-linux-musl, runner: ubuntu-22.04-arm }
-          - { name: windows-x86_64, target: x86_64-pc-windows-msvc, runner: windows-2022 }
+          - { name: linux-x86_64, target: x86_64-unknown-linux-musl, runner: ubuntu-latest, artifact: nhc-ci-linux-x86_64 }
+          - { name: linux-aarch64, target: aarch64-unknown-linux-musl, runner: ubuntu-22.04-arm, artifact: nhc-ci-linux-aarch64 }
+          - { name: windows-x86_64, target: x86_64-pc-windows-msvc, runner: windows-2022, artifact: herdr-core-ci-windows-x86_64 }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 75
     defaults:
@@ -89,22 +122,37 @@ jobs:
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.16.0
+      # The remote driver needs its Cargo cache outside the source checkout.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: ${{ matrix.target }}-release
+          workspaces: ${{ runner.os == 'Windows' && '.' || '. -> ../nhc-target' }}
           cache-workspace-crates: true
           cache-bin: false
           save-if: ${{ env.SAVE_CACHES }}
-      - name: Build
-        run: cargo build --release --locked --target ${{ matrix.target }} -p herdr-core
-      - name: Pack
+      - name: Build (remote nhc)
         if: runner.os != 'Windows'
         run: |
-          bin=target/${{ matrix.target }}/release/herdr-core
+          python3 -B scripts/build-remote.py --commit "$(git rev-parse HEAD)" \
+            --patchset ci-unreleased --release-seq 1 --config dev --bundle-id com.nearshell.ci.agent \
+            --target ${{ matrix.target }} --target-dir ../nhc-target --output "$RUNNER_TEMP/nhc-ci"
+      # The driver ran the native product and checked its build-info.
+      - name: Pack (remote nhc)
+        if: runner.os != 'Windows'
+        run: |
+          out="$RUNNER_TEMP/nhc-ci"
+          bin="$out/nhc-${{ matrix.target }}"
+          cat "$out/manifest.json"
           "$bin" --version
+          "$bin" build-info --json | grep -q '"config":"dev:com.nearshell.ci.agent:remote"'
           file "$bin" | grep -q 'static' || { file "$bin"; echo "not static"; exit 1; }
+          file "$bin" | grep -q 'BuildID\[sha1\]' || { file "$bin"; echo "no build id"; exit 1; }
           mkdir -p dist
-          sh scripts/package "$bin" dist/herdr-core-ci-${{ matrix.name }}.tar.gz
+          cp LICENSE crates/herdr-core/THIRD-PARTY-NOTICES "$out/"
+          tar -czf dist/${{ matrix.artifact }}.tar.gz -C "$out" "nhc-${{ matrix.target }}" manifest.json LICENSE THIRD-PARTY-NOTICES
+      - name: Build
+        if: runner.os == 'Windows'
+        run: cargo build --release --locked --target ${{ matrix.target }} -p herdr-core
       # As release.yml: the exe, Microsoft's ConPTY and the notices.
       - name: Pack (Windows)
         if: runner.os == 'Windows'
@@ -121,12 +169,12 @@ jobs:
           Copy-Item crates/herdr-core/THIRD-PARTY-NOTICES stage/THIRD-PARTY-NOTICES/herdr-core.txt
           scripts/fetch-conpty.ps1 -Dest stage
           Copy-Item distribution/windows/* stage/THIRD-PARTY-NOTICES/
-          tar -a -cf dist/herdr-core-ci-${{ matrix.name }}.zip -C stage herdr-core.exe conpty LICENSE THIRD-PARTY-NOTICES
+          tar -a -cf dist/${{ matrix.artifact }}.zip -C stage herdr-core.exe conpty LICENSE THIRD-PARTY-NOTICES
           if ($LASTEXITCODE) { throw "zip failed" }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: herdr-core-ci-${{ matrix.name }}
-          path: dist/herdr-core-ci-${{ matrix.name }}.*
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}.*
           if-no-files-found: error
           retention-days: 7
 
@@ -179,9 +227,9 @@ jobs:
 
   # One stable check name for branch protection.
   nearshell-ok:
-    needs: [managed, build, build-managed]
+    needs: [managed, remote, build, build-managed]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - run: '[ "${{ needs.managed.result }}" = success ] && [ "${{ needs.build.result }}" = success ] && [ "${{ needs.build-managed.result }}" = success ]'
+      - run: '[ "${{ needs.managed.result }}" = success ] && [ "${{ needs.remote.result }}" = success ] && [ "${{ needs.build.result }}" = success ] && [ "${{ needs.build-managed.result }}" = success ]'
