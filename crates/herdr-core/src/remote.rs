@@ -30,10 +30,10 @@ mod relay;
 mod run;
 mod viewers;
 use run::forward_once;
-#[cfg(test)]
-use viewers::automatic_input;
 use viewers::{RESIZE_LOST, lost_line, negotiate_resize, reattach, relay_out};
 pub use viewers::{Relayed, attach, conn_gone, relay_in};
+#[cfg(test)]
+use viewers::{automatic_input, lost_notice};
 
 #[cfg(test)]
 mod tests;
@@ -104,7 +104,7 @@ impl Line {
                     Err(RpcError::new("unavailable", RESIZE_LOST, "attach again")),
                 );
             } else {
-                lock(&sink.2).switch(&self.frames, there as u32);
+                viewers::switch(&sink, &self.frames, there as u32);
                 lock(&self.streams).insert(there as u32, sink);
             }
         }
@@ -480,11 +480,6 @@ async fn hold(core: &Arc<Core>, m: &Machine, mut d: crate::machines::Dialed) {
     // Killed, not waited for: a Mac core once never heard the old ssh had
     // died and stayed "connecting" for good. It is reaped in the background.
     let _ = d.child.start_kill();
-}
-
-/// CAN first: the line may have dropped mid-sequence, which would swallow this.
-fn lost_notice(machine: &str) -> String {
-    format!("\x18\r\n[line to {machine} lost; reconnecting...]\r\n")
 }
 
 /// A machine's terminals now (after a connect, or after it says we missed

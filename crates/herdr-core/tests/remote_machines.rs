@@ -95,6 +95,25 @@ fn a_marked_viewer_on_the_hub_gets_the_paint_of_a_terminal_there() {
     );
     assert_eq!(marks[1], json!({"type": "paint_end", "paintGen": 1}));
     assert!(String::from_utf8_lossy(&text).contains("marked-ready"));
+    // The line drops: the viewer hears of the gap, and is painted again once it is back.
+    let line = [w.far_bin().as_os_str().as_encoded_bytes(), b"\0connect\0"].concat();
+    let pids = std::fs::read_dir("/proc").unwrap().filter_map(|e| e.ok()?.file_name().to_str()?.parse::<i32>().ok());
+    let connect =
+        pids.filter(|pid| std::fs::read(format!("/proc/{pid}/cmdline")).is_ok_and(|c| c == line)).collect::<Vec<_>>();
+    assert_eq!(connect.len(), 1, "the line's end there");
+    assert_eq!(unsafe { libc::kill(connect[0], libc::SIGKILL) }, 0);
+    while marks.len() < 5 {
+        let (ch, kind, payload) = frame();
+        assert_eq!(ch, channel);
+        match kind {
+            wire::MARK => marks.push(serde_json::from_slice::<Value>(&payload).unwrap()),
+            wire::DATA if marks.len() == 4 => {}
+            _ => panic!("frame {kind} outside the paint: {marks:?}"),
+        }
+    }
+    assert_eq!(marks[2]["type"], "discontinuity");
+    assert_eq!((&marks[3]["reason"], &marks[3]["paintGen"]), (&json!("stitch"), &json!(2)));
+    assert_eq!(marks[4], json!({"type": "paint_end", "paintGen": 2}));
 }
 
 #[test]

@@ -296,6 +296,15 @@ impl Outbox {
         true
     }
 
+    /// Drops what a relayed stream has not handed out yet, as a viewer's own
+    /// queue is reset: (its bytes, its MARKs). A paused or ending stream
+    /// stays so. A marked stream holds no grid; an unmarked one never comes here.
+    pub fn drop_unsent(&mut self, channel: u32) -> (usize, Vec<Vec<u8>>) {
+        let Some(s) = self.streams.get_mut(&channel) else { return (0, Vec::new()) };
+        let marks = s.boundaries.drain(..).filter(|(_, kind, _)| *kind == MARK).map(|(_, _, mark)| mark);
+        (std::mem::take(&mut s.pending).len(), marks.collect())
+    }
+
     pub fn open_viewer(&mut self, channel: u32, marks: bool, budget: std::sync::Arc<ghostty_vt::budget::Budget>) {
         self.open(channel);
         if let Some(queue) = ViewerQueue::new(marks, budget) {
@@ -606,6 +615,38 @@ mod tests {
         assert!(out.mark(2, &vec![b'm'; MAX_PENDING - 1]));
         assert!(!out.mark(2, b"mm"), "nor more than MAX_PENDING of them");
         assert_eq!(frames(&mut out), [(CLOSE, PAINT_LIMIT.to_vec())]);
+    }
+
+    #[test]
+    fn dropping_what_a_relayed_stream_has_not_sent_keeps_it_paused_or_ending() {
+        let mut out = Outbox::default();
+        stalled(&mut out, 1);
+        out.data(1, b"sent?");
+        out.mark(1, b"m1");
+        out.data(1, b"paint");
+        out.mark(1, b"m2");
+        out.credit(1, 2);
+        assert_eq!(frames(&mut out), [(DATA, b"se".to_vec())]);
+        assert_eq!(out.drop_unsent(1), (8, vec![b"m1".to_vec(), b"m2".to_vec()]), "what was not handed out");
+        out.credit(1, 100);
+        out.mark(1, b"gap");
+        out.data(1, b"next");
+        assert_eq!(frames(&mut out), [(MARK, b"gap".to_vec()), (DATA, b"next".to_vec())]);
+        // Ending, it still closes once what comes after is out.
+        out.data(1, b"x");
+        out.mark(1, b"end");
+        out.finish(1, b"{}");
+        out.drop_unsent(1);
+        out.mark(1, b"gap");
+        assert_eq!(frames(&mut out), [(MARK, b"gap".to_vec()), (CLOSE, b"{}".to_vec())]);
+        out.open_paused(2);
+        out.mark(2, b"begin");
+        assert_eq!(out.drop_unsent(2), (0, vec![b"begin".to_vec()]));
+        out.mark(2, b"gap");
+        assert_eq!(frames(&mut out), [], "still waiting for its reply");
+        out.resume(2);
+        assert_eq!(frames(&mut out), [(MARK, b"gap".to_vec())]);
+        assert_eq!(out.drop_unsent(3), (0, vec![]), "no such stream");
     }
 
     #[test]

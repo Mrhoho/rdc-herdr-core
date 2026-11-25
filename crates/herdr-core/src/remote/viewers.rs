@@ -1,6 +1,7 @@
 //! Viewer streams relayed to other cores, including reattachment.
 
 use super::*;
+use relay::{Relay, Rewritten};
 use std::time::Instant;
 
 /// A viewer here on a terminal there. It outlives a dropped line: when the
@@ -41,9 +42,12 @@ pub(super) async fn reattach(core: Arc<Core>, m: Machine, line: Arc<Line>) {
             r.conn.with(|out| out.close(here, b""));
             continue;
         }
-        // The screen is painted again; the viewer already has its history.
+        // The screen is painted again. An unmarked viewer already has its
+        // history; a marked one's is what each paint holds.
         let mut params = r.params.clone();
-        params["history"] = 0.into();
+        if r.params["marks"] != true {
+            params["history"] = 0.into();
+        }
         params["resumed"] = true.into();
         negotiate_resize(&line, &mut params);
         let deadline = deadline_for(&core, "terminal.attach", &params);
@@ -156,7 +160,56 @@ pub(super) fn lost_line(line: &Line, machine: &str) {
     let notice = lost_notice(machine);
     let sinks: Vec<Sink> = lock(&line.streams).drain().map(|(_, sink)| sink).collect();
     for sink in &sinks {
-        deliver(sink, notice.as_bytes());
+        let mut relay = lock(&sink.2);
+        // A marked viewer's bytes all belong to paints: it is told by a mark.
+        if relay.marks.is_some() {
+            ended(&mut relay, &sink.0, sink.1);
+        } else {
+            drop(relay);
+            deliver(sink, notice.as_bytes());
+        }
+    }
+}
+
+/// CAN first: the line may have dropped mid-sequence, which would swallow this.
+pub(super) fn lost_notice(machine: &str) -> String {
+    format!("\x18\r\n[line to {machine} lost; reconnecting...]\r\n")
+}
+
+/// A reply on `frames` opened the stream there that feeds `sink` from now
+/// on, before any frame of it is read: a marked viewer whose last stream
+/// there ended unheard (its line's cleanup never ran) is told first.
+pub(super) fn switch((conn, here, relay): &Sink, frames: &mpsc::UnboundedSender<Vec<u8>>, there: u32) {
+    let mut relay = lock(relay);
+    ended(&mut relay, conn, *here);
+    relay.switch(frames, there);
+}
+
+/// Once for each stream there that ended: what its marked viewer has not
+/// read goes, and it is told of the gap. Nothing goes back: that stream is gone.
+fn ended(relay: &mut Relay, conn: &Conn, here: u32) {
+    if relay.ended() {
+        conn.with(|out| {
+            reset(relay, out, here, json!({"type": "discontinuity"}));
+        });
+    }
+}
+
+/// Drops what a marked viewer has not read, voided by `gap`, which it
+/// reads instead if it was painted anything: the credit due back to the
+/// stream there, and false if its stream closed here.
+fn reset(relay: &mut Relay, out: &mut wire::Outbox, here: u32, gap: Value) -> (u32, bool) {
+    let (bytes, marks) = out.drop_unsent(here);
+    let (back, gap) = relay.dropped(gap, bytes, &marks);
+    (back, gap.is_none_or(|gap| out.mark(here, &gap)))
+}
+
+/// Bytes from the stream there that the viewer is not to credit: it gets them anyway.
+fn credit_there(relay: &Relay, bytes: u32) {
+    if bytes > 0
+        && let Some((frames, there)) = &relay.to
+    {
+        let _ = frames.send(wire::encode(*there, wire::CREDIT, &bytes.to_le_bytes()));
     }
 }
 
@@ -184,11 +237,7 @@ fn deliver((conn, here, relay): &Sink, bytes: &[u8]) -> bool {
         relay.ledger.enqueued(bytes.len());
         back = relay.ledger.dropped(dropped);
     });
-    if back > 0
-        && let Some((frames, there)) = &relay.to
-    {
-        let _ = frames.send(wire::encode(*there, wire::CREDIT, &back.to_le_bytes()));
-    }
+    credit_there(&relay, back);
     open
 }
 
@@ -197,20 +246,24 @@ fn deliver((conn, here, relay): &Sink, bytes: &[u8]) -> bool {
 fn mark((conn, here, relay): &Sink, payload: &[u8]) -> bool {
     let mut relay = lock(relay);
     let Some(marks) = &mut relay.marks else { return true };
-    let mut open = true;
+    let mark = marks.rewrite(payload);
+    let (mut back, mut open) = (0, true);
     conn.with(|out| {
         if !out.has_stream(*here) {
             return;
         }
-        open = match marks.rewrite(payload) {
-            Ok(Some(mark)) => out.mark(*here, &mark),
-            Ok(None) => true,
+        (back, open) = match mark {
+            Ok(Rewritten::Mark(mark)) => (0, out.mark(*here, &mark)),
+            // Its own queue there was reset: the viewer's here is too, or
+            // one that does not read would keep every paint that came since.
+            Ok(Rewritten::Gap(gap)) => reset(&mut relay, out, *here, gap),
             Err(()) => {
                 out.close(*here, b"");
-                false
+                (0, false)
             }
         };
     });
+    credit_there(&relay, back);
     open
 }
 
@@ -361,11 +414,7 @@ pub fn relay_in(core: &Core, conn: &Arc<Conn>, here: u32, kind: u8, payload: &[u
         conn.with(|out| out.credit(here, bytes as usize));
         let mut relay = lock(&r.relay);
         let more = relay.ledger.credited(bytes);
-        if more > 0
-            && let Some((frames, there)) = &relay.to
-        {
-            let _ = frames.send(wire::encode(*there, wire::CREDIT, &more.to_le_bytes()));
-        }
+        credit_there(&relay, more);
         return true;
     }
     // While the line is down this goes nowhere: typing into a gap is lost, not queued.
