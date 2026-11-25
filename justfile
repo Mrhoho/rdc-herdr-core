@@ -130,6 +130,12 @@ managed-release *args:
 remote-check:
     sh scripts/check-remote.sh
 
+# The remote core end to end over real ssh and systemd in Docker (not CI); see docs/nearshell-build.md.
+[unix]
+[positional-arguments]
+remote-e2e *args:
+    python3 -B scripts/e2e-remote.py "$@"
+
 # One locked remote nhc for a Linux target; see docs/nearshell-build.md for required arguments.
 [unix]
 [positional-arguments]
