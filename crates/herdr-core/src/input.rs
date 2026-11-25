@@ -261,7 +261,7 @@ pub enum Step {
 }
 
 pub(crate) fn env_ms(var: &str, default: u64) -> Duration {
-    Duration::from_millis(std::env::var(var).ok().and_then(|v| v.parse().ok()).unwrap_or(default))
+    Duration::from_millis(crate::tuning::ms(var, default))
 }
 
 /// How long a person must have stopped typing before an agent's send goes in.

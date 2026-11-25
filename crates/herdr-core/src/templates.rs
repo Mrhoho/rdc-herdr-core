@@ -126,7 +126,7 @@ pub struct FirstMessage {
 }
 
 pub(crate) fn ready_timeout() -> Duration {
-    let ms = std::env::var("HC_READY_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(60_000);
+    let ms = crate::tuning::ms("HC_READY_MS", 60_000);
     Duration::from_millis(ms)
 }
 

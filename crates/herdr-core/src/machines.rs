@@ -80,7 +80,7 @@ impl Reach<'_> {
             // A pipe from the detached core must not open a console of its own.
             cmd.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
         }
-        if std::env::var_os("HC_SSH").is_none() {
+        if crate::tuning::var_os("HC_SSH").is_none() {
             cmd.arg("-T");
         }
         cmd.arg(self.target).arg(line);
@@ -179,7 +179,7 @@ fn control_path(paths: &crate::paths::Paths, target: &str) -> std::path::PathBuf
 /// an install) would end with it, and take every connection riding it along
 /// (an update restarting hc there ended its own upload that way).
 fn ssh(paths: &crate::paths::Paths, target: &str, extra: &[&str]) -> std::process::Command {
-    if let Some(fake) = std::env::var_os("HC_SSH") {
+    if let Some(fake) = crate::tuning::var_os("HC_SSH") {
         return std::process::Command::new(fake);
     }
     let mut ssh = std::process::Command::new("ssh");
@@ -218,7 +218,7 @@ pub fn login(paths: &crate::paths::Paths, to: Reach) -> Result<(), RpcError> {
 /// Ends the shared login to `target`, if one is up (a forgotten machine).
 pub fn logout(paths: &crate::paths::Paths, to: Reach) {
     let target = to.target;
-    if cfg!(unix) && std::env::var_os("HC_SSH").is_none() && !to.via {
+    if cfg!(unix) && crate::tuning::var_os("HC_SSH").is_none() && !to.via {
         let mut cmd = ssh(paths, target, &[]);
         cmd.args(["-O", "exit", target])
             .stdin(std::process::Stdio::null())
@@ -270,8 +270,13 @@ fn pipe(
     Ok(cmd)
 }
 
-/// What the pipe's line says when there is no hc there.
-const NOT_HERE: &str = "herdr-core is not installed here";
+/// What the pipe's line says when there is no hc there (Nearshell's own core
+/// for a nearshell build). Plain words: it sits inside quoted shell lines.
+const NOT_HERE: &str = if cfg!(feature = "nearshell") {
+    "the Nearshell remote core is not installed here"
+} else {
+    "herdr-core is not installed here"
+};
 
 fn unreachable(to: Reach, why: &str) -> RpcError {
     let target = to.target;
@@ -380,11 +385,11 @@ async fn dial_once(
             }
             // Some connection wrappers collapse all remote failures to exit code 1.
             if status == Some(127) || err.contains(NOT_HERE) {
-                return Err(RpcError::new(
-                    "hc_missing",
-                    format!("{CLI_NAME} is not installed on {target}"),
-                    format!("in a terminal, `{}` offers to copy this {CLI_NAME} there", to.add()),
-                ));
+                let hint = match cfg!(feature = "nearshell") {
+                    true => "add this machine from Nearshell, which installs its remote core there".into(),
+                    false => format!("in a terminal, `{}` offers to copy this {CLI_NAME} there", to.add()),
+                };
+                return Err(RpcError::new("hc_missing", format!("{CLI_NAME} is not installed on {target}"), hint));
             }
             if wants_login(&err) {
                 if cfg!(windows) && !to.via {

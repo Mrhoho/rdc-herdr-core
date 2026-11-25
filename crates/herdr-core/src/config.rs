@@ -98,7 +98,7 @@ impl Config {
 }
 
 fn invalid(message: String) -> RpcError {
-    RpcError::new("config", message, "fix ~/.config/herdr-core/config.toml")
+    RpcError::new("config", message, crate::branding::text("fix ~/.config/herdr-core/config.toml"))
 }
 
 pub fn load(path: &Path) -> Result<Config, RpcError> {

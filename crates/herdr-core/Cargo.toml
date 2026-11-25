@@ -11,9 +11,10 @@ path = "src/main.rs"
 
 [features]
 # Identity isolation: nhc naming, private addressing, no upstream distribution.
-nearshell = []
+# Alone (Linux only) it is the remote build: upstream lifecycle, private root.
+nearshell = ["dep:sha2"]
 # The App-owned hub core: nearshell plus owner lifecycle and [programs].
-managed = ["nearshell", "dep:sha2"]
+managed = ["nearshell"]
 # Never distribute these builds: path overrides are deliberately test-only.
 nearshell-test = ["nearshell"]
 managed-test = ["managed", "nearshell-test"]

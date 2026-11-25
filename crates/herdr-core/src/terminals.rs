@@ -472,7 +472,7 @@ impl JsonSchema for Public {
 
 /// `RETAIN_MS`, or `HC_RETAIN_MS` (tests can't wait a day).
 fn retain_ms() -> u64 {
-    std::env::var("HC_RETAIN_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(RETAIN_MS)
+    crate::tuning::ms("HC_RETAIN_MS", RETAIN_MS)
 }
 
 fn is_zero(n: &u64) -> bool {

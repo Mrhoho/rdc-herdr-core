@@ -370,6 +370,11 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool, _owner_token: Option<&str>) ->
         let value = serde_json::to_value(crate::api::build_info()).expect("build identity serializes");
         return Ok(Some(Out { human: value.to_string(), json: value }));
     }
+    // A nearshell core has one address: refused before anything is touched.
+    #[cfg(feature = "nearshell")]
+    if matches!(cmd, Some(Cmd::Connect { session: Some(_) })) {
+        return Err(crate::paths::address_override());
+    }
     let paths = Paths::from_env()?;
     if !matches!(&cmd, Some(Cmd::Serve | Cmd::Hold { .. } | Cmd::Connect { .. })) {
         crate::platform::legacy_bundle_notice(&paths.state);
@@ -632,6 +637,8 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool, _owner_token: Option<&str>) ->
         }
         Cmd::Server { action: ServerCmd::Stop } => stop(&paths)?,
         Cmd::Update { from: None, version, force } => {
+            // Before up_to_date, which may restart an older core.
+            crate::branding::upstream_distribution()?;
             let this = format!("{CLI_NAME} {}", env!("CARGO_PKG_VERSION"));
             if let Some(v) = &version
                 && !force

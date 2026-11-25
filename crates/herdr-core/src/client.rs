@@ -113,6 +113,10 @@ fn connect_starting(paths: &Paths, explicit: bool) -> Result<Stream, RpcError> {
             break;
         }
         if start.elapsed() > START_WAIT {
+            #[cfg(all(feature = "nearshell", not(feature = "managed")))]
+            if std::fs::symlink_metadata(&paths.socket).is_err() {
+                return Err(crate::remote_build::socket_lost(&paths.socket));
+            }
             return Err(unavailable(format!("core did not stop or start within {} s", START_WAIT.as_secs())));
         }
         std::thread::sleep(Duration::from_millis(10));
@@ -219,6 +223,13 @@ pub fn spawn_detached(paths: &Paths, args: &[&str], log: &str) -> std::io::Resul
         let token = args.windows(2).find(|pair| pair[0] == "--owner-token").map(|pair| pair[1]);
         crate::owner::authorize(paths, token).map_err(|_| std::io::Error::other("managed_by_owner"))?;
         cmd.env_clear().envs(crate::owner::launch_env(paths).map_err(|_| std::io::Error::other("managed_by_owner"))?);
+    }
+    // Remote: nothing of the user's hc, a login profile's or a terminal's.
+    #[cfg(all(feature = "nearshell", not(feature = "managed")))]
+    for key in crate::remote_build::launch_removals(
+        std::env::vars_os().map(|(k, _)| k).chain(cmd.get_envs().map(|(k, _)| k.to_owned())),
+    ) {
+        cmd.env_remove(key);
     }
     // A core or holder started from inside a terminal is not that terminal's:
     // ending the terminal must not end them.

@@ -84,6 +84,9 @@ fn env(
     cwd: &str,
 ) -> BTreeMap<String, String> {
     let hc_own = ["HC_TERMINAL_ID", crate::sweep::VAR, crate::sweep::RUNTIME];
+    // Remote: no HC_* from the core or the caller, only the scope added below.
+    #[cfg(feature = "nearshell")]
+    let (base, extra) = (crate::remote_build::without_hc(base), crate::remote_build::without_hc(extra));
     let mut env: BTreeMap<String, String> = base
         .into_iter()
         .filter(|(k, _)| !crate::api::IDENTITY_VARS.contains(&k.as_str()) && !hc_own.contains(&k.as_str()))
@@ -174,7 +177,10 @@ pub async fn run(core: &Arc<Core>, p: ExecParams, from_afar: bool) -> Result<Exe
     #[cfg(unix)]
     cmd.args(&argv[1..]);
     #[cfg(not(feature = "managed"))]
-    let program_env = env(crate::platform::program_env().await, crate::api::labels(&p.env), &token, &cwd);
+    #[allow(unused_mut)]
+    let mut program_env = env(crate::platform::program_env().await, crate::api::labels(&p.env), &token, &cwd);
+    #[cfg(all(feature = "nearshell", not(feature = "managed")))]
+    crate::remote_build::add_entry(&mut program_env, core.paths.root());
     cmd.current_dir(&cwd)
         .env_clear()
         .envs(program_env)

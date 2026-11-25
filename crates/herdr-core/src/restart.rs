@@ -146,7 +146,11 @@ pub(crate) unsafe fn restore(paths: &Paths) {
             return;
         }
     };
-    let restored = crate::platform::restored_environment(env.vars, std::env::vars_os(), env.fresh);
+    #[allow(unused_mut)]
+    let mut restored = crate::platform::restored_environment(env.vars, std::env::vars_os(), env.fresh);
+    // Remote: a --fresh caller's terminal fields never become the core's.
+    #[cfg(all(feature = "nearshell", not(feature = "managed")))]
+    restored.retain(|key, _| !crate::remote_build::foreign(key));
     unsafe {
         for (key, _) in std::env::vars_os().filter(|(key, _)| valid_key(key)) {
             std::env::remove_var(key);

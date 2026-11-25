@@ -29,16 +29,29 @@ pub fn text(source: &str) -> String {
         end = at + 2;
     }
     out.push_str(&source[end..]);
-    out.replace(
-        "~/.config/herdr-core",
-        &format!("~/Library/Application Support/{}/config/herdr-core", env!("NEARSHELL_CORE_BUNDLE_ID")),
-    )
-    .replace(
-        "Tests need their own `HC_SESSION` and scratch XDG paths.",
-        "Tests require the managed-test build and its scratch root; HC_SESSION and HC_SOCKET are refused.",
-    )
-    .replace("latest release, at least X, or a build", "use Nearshell to update its bundled core")
+    out.replace("~/.config/herdr-core", CONFIG_DIR)
+        .replace("Tests need their own `HC_SESSION` and scratch XDG paths.", TESTS)
+        .replace("latest release, at least X, or a build", "use Nearshell to update its bundled core")
 }
+
+/// Where this build's config lives, for prose (the root is the account's, not HOME's).
+#[cfg(feature = "managed")]
+const CONFIG_DIR: &str =
+    concat!("~/Library/Application Support/", env!("NEARSHELL_CORE_BUNDLE_ID"), "/config/herdr-core");
+#[cfg(all(feature = "nearshell", not(feature = "managed")))]
+const CONFIG_DIR: &str = concat!("~/.local/share/nearshell/", env!("NEARSHELL_CORE_BUNDLE_ID"), "/config/herdr-core");
+#[cfg(not(feature = "nearshell"))]
+const CONFIG_DIR: &str = "~/.config/herdr-core";
+const TESTS: &str = if cfg!(feature = "managed") {
+    "Tests require the managed-test build and its scratch root; HC_SESSION and HC_SOCKET are refused."
+} else {
+    "Tests require the nearshell-test build and its scratch root; HC_SESSION and HC_SOCKET are refused."
+};
+
+/// Upstream names files and services after herdr-core and hc; Nearshell's own
+/// are recognisably its: systemd units, staged binaries.
+pub const SERVICE_PREFIX: &str = if cfg!(feature = "nearshell") { "nearshell" } else { "hc" };
+pub const STAGED_PREFIX: &str = if cfg!(feature = "nearshell") { ".nhc.new." } else { ".herdr-core.new." };
 
 /// Only schema descriptions are prose; keys, enums, defaults and examples stay opaque.
 pub fn schema(value: &mut serde_json::Value) {

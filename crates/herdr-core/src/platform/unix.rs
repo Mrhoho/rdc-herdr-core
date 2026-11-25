@@ -272,7 +272,7 @@ pub fn swap_in(from: &Path, dest: &Path, works: impl Fn(&Path) -> bool) -> io::R
             ));
         }
     }
-    let tmp = dest.with_file_name(format!(".herdr-core.new.{}", std::process::id()));
+    let tmp = dest.with_file_name(format!("{}{}", crate::branding::STAGED_PREFIX, std::process::id()));
     let staged = std::fs::copy(from, &tmp).and_then(|_| make_executable(&tmp));
     if staged.is_err() || !works(&tmp) {
         let _ = std::fs::remove_file(&tmp);

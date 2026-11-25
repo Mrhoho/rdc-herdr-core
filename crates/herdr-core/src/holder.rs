@@ -95,10 +95,7 @@ pub fn run(socket: std::path::PathBuf) -> io::Result<()> {
     paths.create_dirs()?;
     // A taken path means another holder lives there; a stale file is removed by the core.
     let listener = platform::listen(&socket)?;
-    let grace = std::env::var("HC_HOLDER_GRACE_MS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .map_or(Duration::from_secs(3), Duration::from_millis);
+    let grace = Duration::from_millis(crate::tuning::ms("HC_HOLDER_GRACE_MS", 3000));
     let holder = Arc::new(Holder {
         login_session,
         state: Mutex::new(State {

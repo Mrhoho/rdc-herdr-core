@@ -199,7 +199,7 @@ pub(super) async fn start(
         st.link(id).expect("assigned holder").send(&proto::json_frame(proto::SPAWN, id, &spawn));
         (id, rx)
     };
-    let spawn_ms = std::env::var("HC_SPAWN_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(10_000);
+    let spawn_ms = crate::tuning::ms("HC_SPAWN_MS", 10_000);
     let spawned = tokio::time::timeout(Duration::from_millis(spawn_ms), rx).await;
     let mut st = core.lock();
     match spawned {
@@ -236,6 +236,8 @@ pub(crate) fn terminal_env(
     cwd: &str,
     mut env: BTreeMap<String, String>,
 ) -> (BTreeMap<String, String>, String) {
+    #[cfg(all(feature = "nearshell", not(feature = "managed")))]
+    crate::remote_build::add_entry(&mut env, core.paths.root());
     env.insert("HC_TERMINAL_ID".into(), crate::terminals::address(id));
     env.insert("HC_TERMINAL_SOCKET".into(), core.paths.socket.display().to_string());
     let scope = crate::sweep::token();
@@ -248,6 +250,9 @@ pub(crate) fn terminal_env(
 /// The core's environment with its own terminal identity and explicit client overrides.
 #[cfg(not(feature = "managed"))]
 pub(crate) fn child_env(base: BTreeMap<String, String>, extra: BTreeMap<String, String>) -> BTreeMap<String, String> {
+    // Remote: no HC_* from the core or the caller; terminal_env adds identity.
+    #[cfg(feature = "nearshell")]
+    let (base, extra) = (crate::remote_build::without_hc(base), crate::remote_build::without_hc(extra));
     let mut env: BTreeMap<String, String> = base
         .into_iter()
         .filter(|(k, _)| {
@@ -259,7 +264,9 @@ pub(crate) fn child_env(base: BTreeMap<String, String>, extra: BTreeMap<String, 
     env.insert("COLORTERM".into(), "truecolor".into());
     env.insert("TERM_PROGRAM".into(), "ghostty".into());
     crate::platform::merge_env(&mut env, extra);
-    if let Ok(session) = std::env::var("HC_SESSION") {
+    if let Ok(session) = std::env::var("HC_SESSION")
+        && !cfg!(feature = "nearshell")
+    {
         env.insert("HC_SESSION".into(), session);
     }
     if let Some(lang) = crate::locale::for_programs(&env) {

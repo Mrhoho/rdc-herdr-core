@@ -13,19 +13,31 @@ pub struct Paths {
     pub config: PathBuf,
 }
 
-#[cfg(feature = "nearshell")]
+#[cfg(feature = "managed")]
 mod managed;
+#[cfg(all(feature = "nearshell", not(feature = "managed")))]
+mod remote;
 
 impl Paths {
     pub fn from_env() -> Result<Paths, RpcError> {
-        #[cfg(feature = "nearshell")]
+        #[cfg(feature = "managed")]
         {
             managed::from_env()
+        }
+        #[cfg(all(feature = "nearshell", not(feature = "managed")))]
+        {
+            remote::from_env()
         }
         #[cfg(not(feature = "nearshell"))]
         {
             Self::upstream_from_env()
         }
+    }
+
+    /// A Nearshell root: `<root>/config/herdr-core/config.toml` is its config.
+    #[cfg(feature = "nearshell")]
+    pub fn root(&self) -> &Path {
+        self.config.ancestors().nth(3).expect("nearshell config sits three levels below its root")
     }
 
     #[cfg(not(feature = "nearshell"))]
@@ -91,6 +103,40 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
 
 /// Hex digits in a holder's socket name.
 pub const HOLDER_ID: usize = 8;
+
+/// Nearshell cores have one address each: a terminal's or a shell's
+/// HC_SESSION/HC_SOCKET (even empty) is refused, never followed.
+#[cfg(feature = "nearshell")]
+pub fn address_override() -> RpcError {
+    let message = if cfg!(feature = "managed") {
+        "managed core does not accept session or socket overrides"
+    } else {
+        "the Nearshell remote core does not accept session or socket overrides"
+    };
+    RpcError::new("managed_address_override", message, "remove HC_SOCKET and HC_SESSION")
+}
+
+#[cfg(feature = "nearshell")]
+fn reject_overrides() -> Result<(), RpcError> {
+    match ["HC_SOCKET", "HC_SESSION"].iter().any(|key| std::env::var_os(key).is_some()) {
+        true => Err(address_override()),
+        false => Ok(()),
+    }
+}
+
+/// The holder sockets beside `socket` fit this system's limit too.
+#[cfg(feature = "nearshell")]
+fn fits(socket: &Path) -> bool {
+    let longest = socket.with_extension("holder.sock").as_os_str().len() + 1 + HOLDER_ID;
+    socket.as_os_str().len().max(longest) <= crate::platform::MAX_SOCKET_PATH
+}
+
+/// A test build's root: absolute `NEARSHELL_HC_TEST_ROOT`, never a product path.
+#[cfg(feature = "nearshell-test")]
+fn test_root() -> Option<PathBuf> {
+    let root = PathBuf::from(std::env::var_os("NEARSHELL_HC_TEST_ROOT")?);
+    (root.is_absolute() && !root.components().any(|p| matches!(p, std::path::Component::ParentDir))).then_some(root)
+}
 
 /// The session name goes into folder and pipe names. Spaces around it are
 /// dropped (cmd's `set X=a & ...` keeps the one before `&`); characters a

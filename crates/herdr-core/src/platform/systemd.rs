@@ -4,6 +4,7 @@
 //! becomes theirs.
 
 use crate::branding::COMMAND as CLI_NAME;
+use crate::branding::SERVICE_PREFIX as UNIT;
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::io::{self, Write};
@@ -65,7 +66,7 @@ fn manager() -> Result<PathBuf, bool> {
     }
 }
 
-const NO_MANAGER: &str = "hc: no systemd user manager here: the core ends with whatever started it";
+const NO_MANAGER: &str = "no systemd user manager here: the core ends with whatever started it";
 
 /// Starts `cmd` as a user service with stderr appended to `log`. None: no
 /// user manager here, start it the plain way.
@@ -74,7 +75,7 @@ pub fn spawn(cmd: &Command, log: &Path) -> Option<io::Result<()>> {
         Ok(run) => run,
         Err(warn) => {
             if warn {
-                eprintln!("{NO_MANAGER}");
+                eprintln!("{CLI_NAME}: {NO_MANAGER}");
             }
             return None;
         }
@@ -101,7 +102,8 @@ pub fn spawn(cmd: &Command, log: &Path) -> Option<io::Result<()>> {
     let mut env = service_env(caller);
     env.insert("XDG_RUNTIME_DIR".into(), run.display().to_string());
     let args: Vec<&OsStr> = cmd.get_args().collect();
-    let name = format!("hc-{}-{}", args.first().and_then(|a| a.to_str()).unwrap_or("run"), &super::random_hex()[..8]);
+    let name =
+        format!("{UNIT}-{}-{}", args.first().and_then(|a| a.to_str()).unwrap_or("run"), &super::random_hex()[..8]);
     let here = std::env::current_dir().ok().filter(|d| d.is_dir()).unwrap_or_else(|| PathBuf::from("/"));
     static VERSION: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     let version = *VERSION.get_or_init(|| {
@@ -130,7 +132,7 @@ pub fn spawn(cmd: &Command, log: &Path) -> Option<io::Result<()>> {
         Ok(out) => Err(io::Error::other(format!("systemd-run: {}", String::from_utf8_lossy(&out.stderr).trim()))),
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
             let _ = std::fs::remove_dir_all(&dir);
-            eprintln!("{NO_MANAGER} (no systemd-run on PATH)");
+            eprintln!("{CLI_NAME}: {NO_MANAGER} (no systemd-run on PATH)");
             return None;
         }
         Err(e) => Err(io::Error::new(e.kind(), format!("systemd-run: {e}"))),
@@ -153,7 +155,7 @@ fn shutdown_guard(log: &Path) -> String {
         .as_encoded_bytes()
         .iter()
         .fold(0xcbf29ce484222325u64, |hash, byte| (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3));
-    format!("hc-shutdown-{hash:016x}.service")
+    format!("{UNIT}-shutdown-{hash:016x}.service")
 }
 
 fn ensure_shutdown_guard(run: &Path, log: &Path) -> io::Result<()> {
@@ -797,9 +799,10 @@ mod tests {
         let first = order("serve", "/state/session/core.log");
         let next = order("serve", "/state/session/core.log");
         let holder = order("hold", "/state/session/holder.log");
-        let guard = first.to_str().unwrap().strip_prefix("After=hc-shutdown-").expect("core after guard");
+        let after = format!("After={}-shutdown-", super::UNIT);
+        let guard = first.to_str().unwrap().strip_prefix(after.as_str()).expect("core after guard");
         assert_eq!(next, first, "new cores reuse the guard");
-        assert_eq!(holder, OsStr::new(&format!("Before=hc-shutdown-{guard}")), "holder stops last");
+        assert_eq!(holder, OsStr::new(&format!("Before={}-shutdown-{guard}", super::UNIT)), "holder stops last");
         assert_ne!(order("serve", "/state/other/core.log"), first, "sessions stay separate");
     }
 

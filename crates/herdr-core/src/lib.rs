@@ -2,6 +2,8 @@ pub mod addr;
 pub mod api;
 pub mod attach;
 pub mod branding;
+#[cfg(test)]
+mod build_identity;
 pub mod cli;
 pub mod client;
 pub mod config;
@@ -25,6 +27,8 @@ pub mod put;
 pub mod relay;
 pub mod releases;
 pub mod remote;
+#[cfg(all(feature = "nearshell", not(feature = "managed")))]
+pub mod remote_build;
 mod restart;
 pub mod rpc;
 pub mod runtime;
@@ -34,6 +38,7 @@ pub mod stitch;
 pub mod sweep;
 pub mod templates;
 pub mod terminals;
+pub mod tuning;
 pub mod viewers;
 pub mod wait;
 pub mod wire;

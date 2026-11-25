@@ -7,19 +7,19 @@ fn main() {
     let nearshell = env::var_os("CARGO_FEATURE_NEARSHELL").is_some();
     let managed = env::var_os("CARGO_FEATURE_MANAGED").is_some();
     let test = env::var_os("CARGO_FEATURE_NEARSHELL_TEST").is_some();
+    // The remote build: nearshell without managed, upstream's lifecycle.
+    let remote = nearshell && !managed;
+    let os = env::var("CARGO_CFG_TARGET_OS");
     if managed {
-        assert!(
-            env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos"),
-            "managed distribution currently targets macOS only"
-        );
+        assert!(os.as_deref() == Ok("macos"), "managed distribution currently targets macOS only");
     }
     assert!(
-        managed || !nearshell,
-        "the remote build (feature nearshell without managed) is not enabled yet; build with managed or neither"
+        !remote || os.as_deref() == Ok("linux"),
+        "the remote build (feature nearshell without managed) targets Linux only; on macOS build with managed"
     );
     println!("cargo:rerun-if-env-changed=NEARSHELL_CORE_BUNDLE_ID");
     let bundle = env::var("NEARSHELL_CORE_BUNDLE_ID").unwrap_or_else(|_| {
-        assert!(!nearshell || test, "managed builds require NEARSHELL_CORE_BUNDLE_ID");
+        assert!(!nearshell || test, "nearshell builds require NEARSHELL_CORE_BUNDLE_ID");
         "com.nearshell.core-test".into()
     });
     assert!(
@@ -37,7 +37,7 @@ fn main() {
         let var = format!("NEARSHELL_CORE_{key}");
         println!("cargo:rerun-if-env-changed={var}");
         let mut value = env::var(&var).unwrap_or_else(|_| {
-            assert!(!nearshell || test, "managed builds require {var}");
+            assert!(!nearshell || test, "nearshell builds require {var}");
             fallback.into()
         });
         if nearshell && !test {
@@ -47,7 +47,7 @@ fn main() {
                     "commit must be a full Git SHA"
                 ),
                 "RELEASE_SEQ" => {
-                    assert!(value.parse::<u64>().is_ok_and(|n| n > 0), "managed release sequence must be positive")
+                    assert!(value.parse::<u64>().is_ok_and(|n| n > 0), "nearshell release sequence must be positive")
                 }
                 "CONFIG" => assert!(matches!(value.as_str(), "dev" | "release"), "config must be dev or release"),
                 _ => {}
@@ -56,7 +56,7 @@ fn main() {
         if key == "CONFIG" && nearshell {
             // Includes the addressing contract, so differently configured binaries
             // cannot accidentally advertise the same complete identity.
-            value = format!("{value}:{bundle}{}", if test { ":scratch-test" } else { "" });
+            value = config_identity(&value, &bundle, remote, test);
         }
         assert!(!value.is_empty() && !value.contains(['\r', '\n']), "invalid {var}");
         if key == "RELEASE_SEQ" {
@@ -65,6 +65,8 @@ fn main() {
         println!("cargo:rustc-env={var}={value}");
     }
 }
+
+include!("src/build_identity.rs");
 
 fn macos_identity() {
     println!("cargo:rerun-if-changed=../../distribution/macos-Info.plist");

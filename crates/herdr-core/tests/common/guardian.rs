@@ -26,8 +26,20 @@ impl Guardian {
         if let Some(token) = token {
             cleanup.push(token.into());
         }
+        Self::register_spec(root, cleanup, serde_json::json!({"PATH":std::env::var("PATH").unwrap_or_default()}))
+    }
+    /// A cleanup command of the caller's own, run with exactly `environment`
+    /// (plus the marker): for a build the script has no stop mode for.
+    #[allow(dead_code)] // Only the remote-build tests stop their core this way.
+    pub fn with_command(root: &Path, cleanup: &[&str], environment: serde_json::Value) -> Self {
+        let cleanup = cleanup.iter().map(|s| s.to_string()).collect();
+        let nonce = Self::register_spec(root, cleanup, environment);
+        Self { root: root.into(), nonce }
+    }
+    fn register_spec(root: &Path, cleanup: Vec<String>, environment: serde_json::Value) -> String {
+        let python = "/usr/bin/python3";
         let spec = serde_json::json!({"root":root, "owner":std::process::id(), "cleanup":cleanup,
-            "marked":true, "environment":{"PATH":std::env::var("PATH").unwrap_or_default()}});
+            "marked":true, "environment":environment});
         let mut child = Command::new(python)
             .args(["-B", SCRIPT, "register"])
             .stdin(Stdio::piped())

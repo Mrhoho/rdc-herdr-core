@@ -302,7 +302,7 @@ async fn closed(read: &mut Reader, ahead: &mut Vec<u8>) {
 }
 
 pub fn heartbeat_every() -> std::time::Duration {
-    let ms = std::env::var("HC_HEARTBEAT_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(15_000);
+    let ms = crate::tuning::ms("HC_HEARTBEAT_MS", 15_000);
     std::time::Duration::from_millis(ms)
 }
 

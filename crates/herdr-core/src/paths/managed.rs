@@ -10,13 +10,7 @@ fn invalid() -> RpcError {
 }
 
 pub(super) fn from_env() -> Result<Paths, RpcError> {
-    if ["HC_SOCKET", "HC_SESSION"].iter().any(|key| std::env::var_os(key).is_some()) {
-        return Err(RpcError::new(
-            "managed_address_override",
-            "managed core does not accept session or socket overrides",
-            "remove HC_SOCKET and HC_SESSION",
-        ));
-    }
+    reject_overrides()?;
     let root = root()?;
     let config = root.join("config/herdr-core/config.toml");
     // Missing is an error here, unlike upstream's optional config.
@@ -40,8 +34,7 @@ pub(super) fn from_env() -> Result<Paths, RpcError> {
         }
     }
     let holder_socket = socket.with_extension("holder.sock");
-    let longest = holder_socket.as_os_str().len() + 1 + HOLDER_ID;
-    if socket.as_os_str().len().max(longest) > crate::platform::MAX_SOCKET_PATH {
+    if !fits(&socket) {
         return Err(invalid());
     }
     crate::platform::managed_private_dir(parent).map_err(|_| invalid())?;
@@ -51,11 +44,7 @@ pub(super) fn from_env() -> Result<Paths, RpcError> {
 fn root() -> Result<PathBuf, RpcError> {
     #[cfg(feature = "nearshell-test")]
     {
-        let root = std::env::var_os("NEARSHELL_HC_TEST_ROOT").map(PathBuf::from).ok_or_else(invalid)?;
-        if !root.is_absolute() || root.components().any(|p| matches!(p, std::path::Component::ParentDir)) {
-            return Err(invalid());
-        }
-        Ok(root)
+        test_root().ok_or_else(invalid)
     }
     #[cfg(not(feature = "nearshell-test"))]
     {

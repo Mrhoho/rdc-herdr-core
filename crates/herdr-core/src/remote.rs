@@ -248,7 +248,7 @@ pub fn view(st: &State, m: &Machine) -> MachineView {
 }
 
 fn reconnect_max() -> Duration {
-    Duration::from_millis(std::env::var("HC_RECONNECT_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(30_000))
+    Duration::from_millis(crate::tuning::ms("HC_RECONNECT_MS", 30_000))
 }
 
 /// Keeps the line to every added machine up.
