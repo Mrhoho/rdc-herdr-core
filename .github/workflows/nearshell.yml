@@ -122,6 +122,9 @@ jobs:
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.16.0
+          # A Zig cache restored into the checkout makes it dirty, which the
+          # remote driver refuses; it builds in a snapshot of its own anyway.
+          use-cache: ${{ runner.os == 'Windows' }}
       # The remote driver needs its Cargo cache outside the source checkout.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
@@ -195,6 +198,8 @@ jobs:
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.16.0
+          # As above: nothing may land in the checkout the driver snapshots.
+          use-cache: false
       # The driver needs its Cargo cache outside the source checkout.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
