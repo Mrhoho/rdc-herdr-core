@@ -11,6 +11,9 @@ use std::path::Path;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
+mod nearshell;
+pub use nearshell::Refusal;
+
 #[derive(Serialize, Deserialize, JsonSchema, Clone)]
 pub struct Machine {
     /// What this core calls it: `rohan` in `rohan/t7`.
@@ -33,6 +36,9 @@ pub struct Machine {
     pub host: String,
     /// Its hc version when last seen.
     pub version: String,
+    /// Its build identity when last connected (null: none sent, or an old record).
+    #[serde(default)]
+    pub build: Option<Box<crate::api::BuildInfo>>,
     /// Last observed systemd logout protection; null for old or unsupported cores.
     #[serde(default)]
     pub keeps_running_after_logout: Option<bool>,
@@ -44,6 +50,15 @@ pub struct Machine {
 impl Machine {
     pub fn reach(&self) -> Reach<'_> {
         Reach { target: &self.target, via: self.via }
+    }
+
+    /// Takes in what its `hello` says it is now; whether that changed it.
+    pub fn seen(&mut self, hello: &Value) -> bool {
+        let build = serde_json::from_value(hello["build"].clone()).ok();
+        let version = hello["version"].as_str().unwrap_or(&self.version).to_string();
+        let changed = (&version, &build) != (&self.version, &self.build);
+        (self.version, self.build) = (version, build);
+        changed
     }
 }
 
@@ -251,7 +266,11 @@ fn pipe(
     windows: bool,
 ) -> Result<tokio::process::Command, RpcError> {
     let remote = if cfg!(feature = "nearshell") {
-        format!("nhc connect{}", session.map(|s| format!(" --session {s}")).unwrap_or_default())
+        // Its own remote core only, and one core per machine: no session.
+        match windows {
+            true => nearshell::WINDOWS_PROBE.into(),
+            false => nearshell::unix_line(nearshell::BUNDLE, NOT_HERE),
+        }
     } else if windows {
         let session = session.map(|s| format!(" --session {s}")).unwrap_or_default();
         format!(
@@ -272,6 +291,7 @@ fn pipe(
 
 /// What the pipe's line says when there is no hc there (Nearshell's own core
 /// for a nearshell build). Plain words: it sits inside quoted shell lines.
+/// Seeing it is also what spares a missing core a second dial as Windows.
 const NOT_HERE: &str = if cfg!(feature = "nearshell") {
     "the Nearshell remote core is not installed here"
 } else {
@@ -318,13 +338,18 @@ pub async fn dial(
     hello: Value,
 ) -> Result<Dialed, RpcError> {
     let mut probe_windows = false;
-    match dial_once(paths, to, session, hello.clone(), is_windows(to.target), &mut probe_windows).await {
+    let dialed = match dial_once(paths, to, session, hello.clone(), is_windows(to.target), &mut probe_windows).await {
         Err(e) if probe_windows => match dial_once(paths, to, session, hello, true, &mut probe_windows).await {
             Err(_) if !is_windows(to.target) => Err(e),
             result => result,
         },
         other => other,
+    }?;
+    // Nearshell: only the same build of its own remote core may be used.
+    if cfg!(feature = "nearshell") {
+        nearshell::admit(&crate::api::build_info(), &dialed.hello, to.target, &to.add())?;
     }
+    Ok(dialed)
 }
 
 async fn dial_once(
@@ -379,9 +404,13 @@ async fn dial_once(
                 // the script's quoting. Only our marker proves the script ran.
                 *probe_windows = status != Some(255) && !err.contains(NOT_HERE) && !wants_login(&err);
             }
-            let missing_windows = windows && err.contains(NOT_HERE);
+            let mark = if cfg!(feature = "nearshell") { nearshell::WINDOWS_SEEN } else { NOT_HERE };
+            let missing_windows = windows && err.contains(mark);
             if missing_windows && !is_windows(target) {
                 WINDOWS.lock().unwrap_or_else(|p| p.into_inner()).push(target.to_string());
+            }
+            if missing_windows && cfg!(feature = "nearshell") {
+                return Err(nearshell::windows_unsupported(target));
             }
             // Some connection wrappers collapse all remote failures to exit code 1.
             if status == Some(127) || err.contains(NOT_HERE) {
@@ -416,7 +445,10 @@ async fn dial_once(
         Some(e) if e["data"]["kind"] == "unsupported_generation" => Err(RpcError::new(
             "incompatible",
             format!("{CLI_NAME} on {target} speaks another protocol generation"),
-            format!("in a terminal, `{}` offers to update it", to.add()),
+            match cfg!(feature = "nearshell") {
+                true => Refusal::Incompatible.hint(""),
+                false => format!("in a terminal, `{}` offers to update it", to.add()),
+            },
         )),
         Some(e) => Err(RpcError::from_json(e)),
         None => Ok(Dialed { child, stdin, stdout: lines, stderr, hello: reply["result"].clone() }),
@@ -675,6 +707,43 @@ mod tests {
             );
         }
         assert_eq!(default_name("t14!", |_| false), None);
+    }
+
+    #[test]
+    #[cfg(feature = "nearshell")]
+    fn a_nearshell_build_dials_its_own_core_by_path_and_never_a_session() {
+        let paths = crate::paths::Paths {
+            socket: "/nonexistent/c.sock".into(),
+            holder_socket: "/nonexistent/c.holder.sock".into(),
+            state: "/nonexistent/state".into(),
+            config: "/nonexistent/config.toml".into(),
+        };
+        let args = |to: Reach, windows| -> Vec<String> {
+            let cmd = pipe(&paths, to, Some("s1"), windows).unwrap();
+            cmd.as_std().get_args().map(|a| a.to_string_lossy().into_owned()).collect()
+        };
+        let line = nearshell::unix_line(nearshell::BUNDLE, NOT_HERE);
+        assert!(line.contains(&format!("/.local/share/nearshell/{}/bin/nhc", nearshell::BUNDLE)));
+        assert!(line.contains(&format!("echo \"{NOT_HERE}\" >&2; exit 127")), "{line}");
+        let ssh = args(Reach { target: "box", via: false }, false);
+        assert_eq!(ssh.last(), Some(&line));
+        assert!(!ssh.iter().any(|a| a.contains("s1") || a.contains("--session")), "{ssh:?}");
+        // --via hands the line over as one argument, expanded only there.
+        let via = args(Reach { target: "fly ssh console -C", via: true }, false);
+        assert_eq!(via, ["-c", "fly ssh console -C \"$1\"", "sh", &line]);
+        assert_eq!(args(Reach { target: "box", via: false }, true).last().unwrap(), nearshell::WINDOWS_PROBE);
+    }
+
+    #[test]
+    fn an_older_machine_record_still_loads_and_takes_in_its_build() {
+        let old = json!([{"name":"box","target":"box","session":null,"id":"c1","host":"box","version":"0.1.21"}]);
+        let mut machines: Vec<Machine> = serde_json::from_value(old).unwrap();
+        assert!(machines[0].build.is_none());
+        let build = json!({"commit":"c1","patchset":"p","releaseSeq":3,"config":"dev:x:remote"});
+        assert!(machines[0].seen(&json!({"version":"0.1.22","build":build})));
+        assert!(!machines[0].seen(&json!({"version":"0.1.22","build":build})));
+        let saved = serde_json::to_value(&machines[0]).unwrap();
+        assert_eq!((&saved["version"], &saved["build"]), (&json!("0.1.22"), &build));
     }
 
     #[test]

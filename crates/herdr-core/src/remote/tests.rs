@@ -134,6 +134,7 @@ async fn automatic_input_survives_relays_but_not_a_capability_downgrade() {
             id: "remote".into(),
             host: "away".into(),
             version: "test".into(),
+            build: None,
             keeps_running_after_logout: None,
             logout_linger_user: None,
         };
@@ -318,6 +319,7 @@ async fn failed_reattach_drains_pending_data_before_close() {
         id: "remote".into(),
         host: "away".into(),
         version: "test".into(),
+        build: None,
         keeps_running_after_logout: None,
         logout_linger_user: None,
     };
@@ -392,6 +394,7 @@ fn remote_misses_and_renames_keep_subscribers_on_the_current_machine() {
         id: "remote".into(),
         host: "rohan".into(),
         version: "test".into(),
+        build: None,
         keeps_running_after_logout: None,
         logout_linger_user: None,
     };
@@ -490,6 +493,7 @@ async fn late_remote_attach_and_reattach_close_the_remote_stream() {
             id: "there".into(),
             host: "there".into(),
             version: "test".into(),
+            build: None,
             keeps_running_after_logout: None,
             logout_linger_user: None,
         };

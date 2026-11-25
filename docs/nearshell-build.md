@@ -1,6 +1,6 @@
 # Nearshell 构建与 CLI 契约
 
-状态：A1–A5 已实现；Linux 远端构建（寻址、生命周期、程序环境、`build-remote.py`）已实现，拨号、版本校验与远端安装尚未实现。发行前须通过锁定源码构建与组 A 契约矩阵。日期：2026-11-25。
+状态：A1–A5 已实现；Linux 远端构建（寻址、生命周期、程序环境、`build-remote.py`）已实现；拨号与版本校验已实现，远端安装尚未实现（安装入口仍返回 `managed_distribution`）。发行前须通过锁定源码构建与组 A 契约矩阵。日期：2026-11-25。
 
 目标：保持默认构建的上游命令与寻址行为，提供独立的 Nearshell 分发身份和私有路径。连接生命周期修复及附加的 build 字段适用于所有构建。
 
@@ -38,7 +38,7 @@ HC_SESSION、HC_SOCKET 只要存在（包括空值）就返回 `managed_address_
 
 ## 命名与隔离
 
-Nearshell CLI 的版本前缀、help、skill、固定提示与内置模板说明使用 `nhc`。用户模板、程序输出、协议标签与数据键保持原值。远端拨号不再回退 `hc` 或 `herdr-core`；上游下载器及向上游安装目录复制二进制的功能返回 `managed_distribution`，防止写入用户自装副本；`update` 不带 `--from` 在任何动作之前就返回它（上游会先重启较旧的 core）。A2 的 owner 鉴权、禁止自启及程序环境契约见下文。
+Nearshell CLI 的版本前缀、help、skill、固定提示与内置模板说明使用 `nhc`。用户模板、程序输出、协议标签与数据键保持原值。远端拨号只用[绝对路径](#机器拨号与版本校验)，不回退 `hc` 或 `herdr-core`；上游下载器及向上游安装目录复制二进制的功能返回 `managed_distribution`，防止写入用户自装副本；`update` 不带 `--from` 在任何动作之前就返回它（上游会先重启较旧的 core）。A2 的 owner 鉴权、禁止自启及程序环境契约见下文。
 
 所有 Nearshell 构建使用自己的名字：systemd 单元 `nearshell-<serve|hold>-<随机>` 与关机守护单元 `nearshell-shutdown-<hash>.service`，“没有 systemd 用户管理器”的提示以 `nhc:` 开头，替换二进制的临时文件为 `.nhc.new.<pid>`，远端“未安装”标记为 `the Nearshell remote core is not installed here`，`hc_missing` 的提示指向在 Nearshell 里添加机器。默认构建保持 `hc-…`、`.herdr-core.new.*` 与上游文案。
 
@@ -48,11 +48,11 @@ Nearshell CLI 的版本前缀、help、skill、固定提示与内置模板说明
 
 连接关闭在 Core 状态锁下撤销 admission 并回收 viewer/订阅；迟到的 attach/subscribe 返回 `connection_closed`，不能重新登记。已受理的其他 RPC 保留原有完成语义，死连接上的迟到回复被丢弃。headless 尺寸恢复及队列回收由确定性测试覆盖。
 
-默认验证：`cargo test --locked`、`just check`、`just docs-check`。额外验证 managed 代码：`cargo test --locked -p herdr-core --features managed-test --lib --test managed`。远端构建在 Linux 上用 `just remote-check`（`scripts/check-remote.sh`）：clippy、lib 单元测试与 `tests/remote_build.rs`。上游集成套件刻意使用 HC_SESSION，不适用于 Nearshell feature；单独运行默认套件及上述两个套件。
+默认验证：`cargo test --locked`、`just check`、`just docs-check`。额外验证 managed 代码：`cargo test --locked -p herdr-core --features managed-test --lib --test managed`。`tests/managed_machines.rs` 也属于 managed 套件（`check-managed.sh` 一并运行）。远端构建在 Linux 上用 `just remote-check`（`scripts/check-remote.sh`）：clippy、lib 单元测试、`tests/remote_build.rs` 与 `tests/remote_machines.rs`。上游集成套件刻意使用 HC_SESSION，不适用于 Nearshell feature；单独运行默认套件及上述两个套件。
 
 ## 远端构建（Linux）
 
-`cargo build --locked --features nearshell --bin nhc`（不开 `managed`），只构建 `nhc`。它是被 Mac hub 经 SSH 接入的远端 core：身份隔离同 managed，生命周期与程序环境沿用上游。拨号、版本校验与安装由后续步骤实现，本构建目前只保证在 Linux 上作为一个独立、隔离的 core 运行。
+`cargo build --locked --features nearshell --bin nhc`（不开 `managed`），只构建 `nhc`。它是被 Mac hub 经 SSH 接入的远端 core：身份隔离同 managed，生命周期与程序环境沿用上游。hub 如何拨到它、如何校验它见[机器：拨号与版本校验](#机器拨号与版本校验)；远端安装由后续步骤实现。
 
 ### 地址
 
@@ -89,6 +89,73 @@ python3 -B scripts/build-remote.py --commit "$(git rev-parse HEAD)" --patchset <
 ```
 
 产出 `<输出>/nhc-<target>` 与 `manifest.json`，其中 `entry` 为 `{target, file, bytes, sha256, build}`，另记源码 commit、子模块、驱动脚本 hash、工具链与 profile。macOS 上交叉编译、Linux 上原生构建用同一条命令：release profile（strip），rustc 自带的 `rust-lld` 链接，sha1 GNU build id，Cargo home 重映射为 `/nearshell/cargo`；工作区路径本来就是相对路径，因此同一 commit 在同一种主机上换源码目录构建，字节相同。macOS 交叉产物与 Linux 原生产物不保证逐字节相同（两边 `rust-lld` 写入的版本注释与字符串段顺序不同），所以制品只按各自 manifest 的 `sha256` 认定，不跨主机比对。能在本机运行的目标（同架构 Linux）由脚本执行 `build-info --json` 核对；交叉产物的 `build` 按构建参数写入，`executed:false`，真实身份由安装时的候选二进制报告。CI 的 `nearshell.yml` 在 Linux runner 上用 CI 身份原生构建两个目标，`remote` 任务运行 `scripts/check-remote.sh`。
+
+## 机器：拨号与版本校验
+
+所有 Nearshell 构建（managed 与远端构建）都按本节拨号；默认构建的拨号命令、Windows 探测与安装保持上游。判定逻辑在 `crates/herdr-core/src/machines/nearshell.rs`，拨号与连线仍在 `machines.rs`、`remote.rs`。
+
+### 拨号命令
+
+拨 Unix 机器时，经 ssh 或 `--via` 在对端执行（`<bundle-id>` 为本构建编译进的 bundle ID）：
+
+```sh
+sh -c 'p="$HOME/.local/share/nearshell/<bundle-id>/bin/nhc"; [ -x "$p" ] || { echo "the Nearshell remote core is not installed here" >&2; exit 127; }; unset HC_SESSION HC_SOCKET; exec "$p" connect'
+```
+
+- 不查 PATH。未安装时打印“未安装”标记并以 127 退出，hub 返回 `hc_missing`。这个标记与 Windows 探测共用同一常量：看到它就不再按 Windows 重拨，未安装只拨一次。
+- 先 `unset HC_SESSION HC_SOCKET`，用户在登录配置里为自己的 `hc` 导出的会话变量不会让 `nhc connect` 拒绝运行。
+- `--via` 保持上游语义：这一行作为用户命令的最后一个参数传到对端展开。
+- Nearshell 构建不接受机器的 session：`nhc machine add --session` 返回 `usage`（该选项在 `nhc` 的 help 中隐藏），`machine.add` 带 `session` 返回 `invalid_params`；旧记录里的 `session` 拨号时不使用。
+- 第一次拨号失败且没有出现标记时，照上游再按 Windows 探测一次，Nearshell 的探测行是 `cmd /d /c "echo nearshell-windows-%OS% 1>&2 & exit /b 127"`，只有 cmd 会把 `%OS%` 展开成 `Windows_NT`。确认是 Windows 时返回 `unsupported_platform`，不进入上游的 Windows 安装分支。
+
+### 版本校验
+
+拨号拿到对端 `hello` 后，hub 用运行中的 core 编译进去的身份（`build_info()`）与对端 `hello.build` 比较，不看 semver。`machine.add` 与后台连线走同一条拨号路径，都经过这一步。
+
+预期的远端 config 由 hub 自己的 config 推导：去掉末尾的 `:scratch-test` 与 `:remote`，补上 `:remote`，原来有 `:scratch-test` 再放回最后。因此：
+
+| hub | hub config | 预期的远端 config |
+|---|---|---|
+| managed | `<dev\|release>:<bundle-id>` | `<dev\|release>:<bundle-id>:remote` |
+| managed-test | `…:<bundle-id>:scratch-test` | `…:<bundle-id>:remote:scratch-test` |
+| 远端构建当 hub | `…:<bundle-id>:remote` | 自身 |
+| 远端测试构建当 hub | `…:<bundle-id>:remote:scratch-test` | 自身 |
+
+| 对端 `hello.build` | 结果（错误码与机器状态） |
+|---|---|
+| config 为预期值，`releaseSeq`、`commit`、`patchset` 都相同 | 可用 |
+| config 为预期值，`releaseSeq` 更小 | `needs_update` |
+| config 为预期值，`releaseSeq` 更大 | `machine_newer` |
+| config 为预期值，`releaseSeq` 相同但 `commit` 或 `patchset` 不同 | `build_conflict` |
+| config 不是预期值（不论序号） | `build_conflict` |
+| 没有 `build` 或无法解析（上游 hc 被放在这个路径，或不带身份的旧构建） | `build_conflict` |
+| `hello` 返回 `unsupported_generation` | `incompatible` |
+
+`incompatible` 只表示协议代际不符。`machine.add` 被拒时直接返回上表的错误码，机器不登记。
+
+### 机器状态
+
+`machine.list`、`ls` 的 `state` 在上游的 `connecting`、`connected`、`needs_login`、`needs_update`、`unreachable` 之外，Nearshell 构建还会出现 `machine_newer`、`build_conflict`、`incompatible`；`needs_update` 在 Nearshell 构建里表示对端序号更小。处于这四个状态的机器带 `since_ms` 与 `why`（拒绝原因，含两边的序号或身份），不按退避重拨：只有 `machine.connect`（`nhc machine login` 也会调用它）或 hub core 启动时会再拨一次。路由到这台机器的调用在 `needs_update` 时返回 `needs_update`，其余三个状态返回 `unavailable`。默认构建里协议代际不符仍记为 `needs_update` 并按退避重拨。
+
+机器记录新增 `build`：最近一次连上时对端的构建身份，与 `version` 一起在每次连上时刷新；没有这个字段的旧记录照常读取（为 null）。`machine ls --json` 带出它；`nhc machine ls` 的人读输出在版本后显示 `build <releaseSeq> <commit 前 12 位> <patchset>`，没有记录时显示 `build unknown`。
+
+### CLI
+
+Nearshell 构建的 `nhc machine add` 只在 `hc_missing` 和 `needs_update` 时进入安装（上游是 `hc_missing` 与 `incompatible`）；本步安装入口仍返回 `managed_distribution`。`machine_newer`、`build_conflict`、`incompatible`、`unsupported_platform` 不进入安装，直接输出错误与提示：
+
+| 错误码 | 提示（hint） |
+|---|---|
+| `needs_update` | `update its remote core: <添加命令> --install`（路由调用为 `nhc machine update <name>`） |
+| `machine_newer` | `update Nearshell on this Mac` |
+| `build_conflict` | ``not handled automatically: compare `nhc build-info` here with `~/.local/share/nearshell/<bundle-id>/bin/nhc build-info` there`` |
+| `incompatible` | `not handled automatically: make this Mac's Nearshell and the remote core there the same release` |
+| `unsupported_platform` | `add a Linux machine` |
+
+### 测试
+
+- 单元：拨号命令字符串、预期远端 config 的推导与幂等、判定函数各分支（含 config 不符与缺少 `build`）、旧记录读取、`machine ls` 的人读输出。
+- macOS（`tests/managed_machines.rs`）：managed hub 经 `--via` 与脚本化的对端，在本机存在的 sh、bash、zsh、dash、ksh、csh、tcsh 作登录 shell 时，未安装得到 `hc_missing`，对端被以 `connect` 参数、无 `HC_SESSION`/`HC_SOCKET` 执行；对端身份更新、同序号不同 commit、managed config、缺少 `build`、协议代际不符各得到对应错误码；CLI 只在未安装时进入安装。
+- Linux（`tests/remote_machines.rs`）：远端测试构建作 hub，经假 ssh（对端登录环境导出 `HC_SESSION`/`HC_SOCKET`）与 `--via` 连上同一构建；未安装只拨一次；Windows 探测返回 `unsupported_platform`；对端换成无身份或另一代际后机器停在对应状态、不自动重拨、`machine.connect` 才重拨。`check-remote.sh` 另外冻结四个身份不同的测试构建（同一 target 目录，每个只重编 herdr-core），被忽略的矩阵测试用它们覆盖 `needs_update`、`machine_newer`、两种 `build_conflict` 及各自的不重拨与恢复。
 
 ## Managed program environments (P3)
 
@@ -279,4 +346,4 @@ entire replay. Unmarked viewers keep upstream behavior.
 
 managed命令为nhc，不提供旧名或hc别名；NEARSHELL_HC仍是绝对命令入口。App owner负责在programs.env里前置私有bin并写入NEARSHELL_HC。run/exec/keep均重新读取config，新程序采用新环境，已有PTY进程不受追溯修改。改名时App先验签安装nhc、按既有owner restart保留旧PTY，再删除其私有bin旧入口。
 
-managed机器连接使用nhc connect，不回退upstream hc/herdr-core；已登记机器需对端升级并配置非交互SSH命令路径。自定义via字符串不自动修改，旧命令路径需用户显式更新。非managed安装/远端行为保持上游。
+Nearshell 机器连接只拨对端远端构建的绝对路径（见[机器：拨号与版本校验](#机器拨号与版本校验)），不依赖对端 PATH，不回退 upstream hc/herdr-core。via 字符串只负责传输，远端命令行仍由 core 生成。默认构建的安装与远端行为保持上游。

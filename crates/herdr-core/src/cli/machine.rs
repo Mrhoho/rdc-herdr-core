@@ -30,6 +30,20 @@ fn linger_user(m: &Value) -> String {
     }
 }
 
+/// Which Nearshell build runs there, for `machine ls`: ` build 5 1a2b3c4d5e6f p2`.
+fn build_there(build: &Value) -> String {
+    match (cfg!(feature = "nearshell"), build["commit"].as_str()) {
+        (true, Some(commit)) => format!(
+            " build {} {} {}",
+            build["releaseSeq"],
+            commit.get(..12).unwrap_or(commit),
+            build["patchset"].as_str().unwrap_or("?")
+        ),
+        (true, None) => " build unknown".into(),
+        (false, _) => String::new(),
+    }
+}
+
 /// A person who can answer ssh's questions (a password, a code, a host key).
 fn at_terminal() -> bool {
     std::io::stdin().is_terminal() && std::io::stderr().is_terminal()
@@ -51,18 +65,39 @@ pub(super) fn machine(
             let target =
                 p.via.clone().or_else(|| p.target.clone().map(crate::machines::ssh_target)).unwrap_or_default();
             let reach = crate::machines::Reach { target: &target, via: p.via.is_some() };
+            if cfg!(feature = "nearshell") && p.session.is_some() {
+                return Err(RpcError::new(
+                    "usage",
+                    "a Nearshell machine runs one remote core: there is no session to pick",
+                    "leave out --session",
+                ));
+            }
             if at_terminal() {
                 crate::machines::login(paths, reach)?;
             }
+            // Nearshell installs only where its own remote core is missing or
+            // older; a newer, conflicting or incompatible one is reported as is.
+            let installs: [&str; 2] = if cfg!(feature = "nearshell") {
+                ["hc_missing", "needs_update"]
+            } else {
+                ["hc_missing", "incompatible"]
+            };
             let m = match call("machine.add", to(&p)) {
-                Err(e) if (p.install || at_terminal()) && matches!(e.kind.as_str(), "hc_missing" | "incompatible") => {
-                    let what = if e.kind == "hc_missing" {
-                        &format!("has no {CLI_NAME}")
-                    } else {
-                        &format!("has an {CLI_NAME} too old to talk to")
+                Err(e) if (p.install || at_terminal()) && installs.contains(&e.kind.as_str()) => {
+                    let what = match (e.kind.as_str(), cfg!(feature = "nearshell")) {
+                        ("hc_missing", false) => &format!("has no {CLI_NAME}"),
+                        (_, false) => &format!("has an {CLI_NAME} too old to talk to"),
+                        ("hc_missing", true) => "has no Nearshell remote core",
+                        (_, true) => "runs an older Nearshell remote core",
                     };
                     if !p.install {
-                        eprint!("{target} {what}. Copy this {CLI_NAME} ({}) there? [Y/n] ", env!("CARGO_PKG_VERSION"));
+                        match cfg!(feature = "nearshell") {
+                            true => eprint!("{target} {what}. Install this Mac's remote core there? [Y/n] "),
+                            false => eprint!(
+                                "{target} {what}. Copy this {CLI_NAME} ({}) there? [Y/n] ",
+                                env!("CARGO_PKG_VERSION")
+                            ),
+                        }
                         let mut answer = String::new();
                         std::io::stdin().read_line(&mut answer).map_err(|err| RpcError::internal(err.to_string()))?;
                         if answer.trim().to_lowercase().starts_with('n') {
@@ -96,10 +131,11 @@ pub(super) fn machine(
                     let state = line_state(m);
                     let logout = if m["keeps_running_after_logout"] == false { "  ! stops at logout" } else { "" };
                     format!(
-                        "{:<16} {state}{logout}  \x1b[2m{}{session} \u{b7} {CLI_NAME} {}\x1b[22m",
+                        "{:<16} {state}{logout}  \x1b[2m{}{session} \u{b7} {CLI_NAME} {}{}\x1b[22m",
                         s(&m["name"]),
                         s(&m["target"]),
-                        s(&m["version"])
+                        s(&m["version"]),
+                        build_there(&m["build"])
                     )
                 })
                 .collect();
@@ -185,5 +221,21 @@ mod tests {
             let listed = machine(&paths, MachineCmd::Ls, |_, _| Ok(json!({"machines":[remote]}))).unwrap();
             assert_eq!(listed.human.contains("stops at logout"), state == false);
         }
+    }
+
+    #[test]
+    #[cfg(feature = "nearshell")]
+    fn machine_ls_shows_the_build_there_and_why_a_held_one_waits() {
+        let paths = Paths { socket: "u".into(), holder_socket: "u".into(), state: "u".into(), config: "u".into() };
+        let build = json!({"commit":"0123456789abcdef0123","patchset":"p2","releaseSeq":5,"config":"dev:x:remote"});
+        let row = |m: Value| machine(&paths, MachineCmd::Ls, |_, _| Ok(json!({"machines":[m]}))).unwrap().human;
+        let m = |state: &str, build: Value| json!({"name":"box","target":"box","version":"0.1.22","build":build,"state":state,"why":"box runs a newer one"});
+        assert!(row(m("connected", build.clone())).contains("nhc 0.1.22 build 5 0123456789ab p2"));
+        assert!(row(m("connected", Value::Null)).contains("nhc 0.1.22 build unknown"));
+        assert!(
+            row(m("machine_newer", build.clone())).contains("runs a newer remote core: update Nearshell on this Mac")
+        );
+        let conflict = row(m("build_conflict", build));
+        assert!(conflict.contains("build_conflict (box runs a newer one): not handled automatically"), "{conflict}");
     }
 }

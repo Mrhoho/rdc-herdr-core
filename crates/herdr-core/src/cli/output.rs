@@ -257,6 +257,13 @@ pub(super) fn line_state(m: &Value) -> String {
         Some("needs_update") => {
             format!("needs an {CLI_NAME} update: {CLI_NAME} machine update {}", m["name"].as_str().unwrap_or("?"))
         }
+        // Nearshell's build gate: the other two wait for a person.
+        Some("machine_newer") => {
+            format!("runs a newer remote core{}: update Nearshell on this Mac", since.unwrap_or_default())
+        }
+        Some(state @ ("build_conflict" | "incompatible")) => {
+            format!("{state}{}{why}: not handled automatically", since.unwrap_or_default())
+        }
         Some(state) => format!("{state}{}{why}", since.unwrap_or_default()),
         None => "?".into(),
     }

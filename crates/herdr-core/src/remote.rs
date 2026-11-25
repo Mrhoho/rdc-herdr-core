@@ -220,6 +220,13 @@ pub enum LineState {
         since_ms: u64,
         why: String,
     },
+    /// Nearshell: the build gate refused its core. Dialed again only by
+    /// machine.connect (or a core start), never on a timer.
+    Held {
+        since_ms: u64,
+        refusal: crate::machines::Refusal,
+        why: String,
+    },
 }
 
 /// A machine as `machine ls` and `ls` show it: its profile and its line now.
@@ -227,7 +234,8 @@ pub enum LineState {
 pub struct MachineView {
     #[serde(flatten)]
     pub machine: Machine,
-    /// connecting, connected, needs_login or unreachable.
+    /// connecting, connected, needs_login, needs_update or unreachable; on
+    /// Nearshell builds also machine_newer, build_conflict and incompatible.
     pub state: String,
     /// Since when it is not connected (ms since the epoch).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -243,6 +251,7 @@ pub fn view(st: &State, m: &Machine) -> MachineView {
         Some(LineState::NeedsLogin { since_ms }) => ("needs_login", Some(*since_ms), None),
         Some(LineState::NeedsUpdate { since_ms }) => ("needs_update", Some(*since_ms), None),
         Some(LineState::Unreachable { since_ms, why }) => ("unreachable", Some(*since_ms), Some(why.clone())),
+        Some(LineState::Held { since_ms, refusal, why }) => (refusal.state(), Some(*since_ms), Some(why.clone())),
     };
     MachineView { machine: m.clone(), state: state.into(), since_ms, why }
 }
@@ -294,18 +303,20 @@ async fn supervise(core: Arc<Core>, id: String) {
     let mut login_backoff = Duration::ZERO;
     loop {
         let Some(m) = core.lock().machines.iter().find(|m| m.id == id).cloned() else { return };
-        let down = |st: &mut State, why: String| {
+        let down = |st: &mut State, why: String, refusal: Option<crate::machines::Refusal>| {
             let since_ms = match st.lines.get(&id) {
                 Some(
                     LineState::Unreachable { since_ms, .. }
                     | LineState::NeedsLogin { since_ms }
-                    | LineState::NeedsUpdate { since_ms },
+                    | LineState::NeedsUpdate { since_ms }
+                    | LineState::Held { since_ms, .. },
                 ) => *since_ms,
                 _ => now_ms(),
             };
-            let state = match why.as_str() {
-                "needs_login" => LineState::NeedsLogin { since_ms },
-                "needs_update" => LineState::NeedsUpdate { since_ms },
+            let state = match (why.as_str(), refusal) {
+                (_, Some(refusal)) => LineState::Held { since_ms, refusal, why },
+                ("needs_login", _) => LineState::NeedsLogin { since_ms },
+                ("needs_update", _) => LineState::NeedsUpdate { since_ms },
                 _ => LineState::Unreachable { since_ms, why },
             };
             st.lines.insert(id.clone(), state);
@@ -314,18 +325,17 @@ async fn supervise(core: Arc<Core>, id: String) {
         let hello = json!({"framed": true, "core": core.info, "calls_you": m.name, "features": crate::api::FEATURES});
         match crate::machines::dial(&core.paths, m.reach(), m.session.as_deref(), hello).await {
             Ok(d) if d.hello["core"]["id"] != m.id.as_str() => {
-                down(&mut core.lock(), format!("a different core answers there ({})", d.hello["core"]["id"]));
+                down(&mut core.lock(), format!("a different core answers there ({})", d.hello["core"]["id"]), None);
             }
             Ok(d) => {
                 backoff = Duration::from_millis(250);
                 login_backoff = Duration::ZERO;
                 // It may have been updated since it was added.
-                if let Some(v) = d.hello["version"].as_str().filter(|v| *v != m.version) {
+                {
                     let mut st = core.lock();
-                    if let Some(saved) = st.machines.iter_mut().find(|x| x.id == id) {
-                        saved.version = v.into();
+                    if st.machines.iter_mut().find(|x| x.id == id).is_some_and(|saved| saved.seen(&d.hello)) {
+                        crate::machines::save(&core.paths.state, &st.machines);
                     }
-                    crate::machines::save(&core.paths.state, &st.machines);
                 }
                 hold(&core, &m, d).await;
                 // Dial again at once: most drops are a restart there. Calls meanwhile
@@ -334,8 +344,11 @@ async fn supervise(core: Arc<Core>, id: String) {
                 core.changed.notify_waiters();
                 continue;
             }
+            Err(e) if let Some(refusal) = crate::machines::Refusal::of(&e) => {
+                return down(&mut core.lock(), e.message, Some(refusal));
+            }
             Err(e) if e.kind == "needs_login" => {
-                down(&mut core.lock(), "needs_login".into());
+                down(&mut core.lock(), "needs_login".into(), None);
                 // Slow enough that a failing key doesn't get the person banned (fail2ban, CrowdSec),
                 // but an ssh-agent unlocked later still reconnects on its own.
                 login_backoff = Duration::from_secs(match login_backoff.as_secs() {
@@ -346,8 +359,8 @@ async fn supervise(core: Arc<Core>, id: String) {
                 tokio::time::sleep(login_backoff).await;
                 continue;
             }
-            Err(e) if e.kind == "incompatible" => down(&mut core.lock(), "needs_update".into()),
-            Err(e) => down(&mut core.lock(), e.message),
+            Err(e) if e.kind == "incompatible" => down(&mut core.lock(), "needs_update".into(), None),
+            Err(e) => down(&mut core.lock(), e.message, None),
         }
         tokio::time::sleep(backoff).await;
         backoff = (backoff * 2).min(reconnect_max());
@@ -940,6 +953,7 @@ async fn line(core: &Core, m: &Machine) -> Result<Arc<Line>, RpcError> {
             format!("{} is unreachable: {why}", m.name),
             format!("{CLI_NAME} machine ls shows when it comes back"),
         )),
+        Some(LineState::Held { refusal, why, .. }) => Err(refusal.unavailable(&m.name, why)),
         _ => Err(RpcError::new("unavailable", format!("still connecting to {}", m.name), "try again in a moment")),
     }
 }

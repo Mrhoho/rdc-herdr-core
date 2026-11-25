@@ -1,73 +1,13 @@
 #![cfg(all(unix, feature = "managed-test"))]
 use serde_json::Value;
-use std::path::PathBuf;
-use std::process::{Command, Output};
+use std::process::Command;
 
 #[path = "common/guardian.rs"]
 mod guardian;
-struct Scratch(PathBuf, String, Option<std::fs::File>, guardian::Guardian);
-impl Scratch {
-    fn new() -> Self {
-        let root = PathBuf::from(format!("/var/tmp/nc-{}", herdr_core::platform::random_hex()));
-        std::fs::create_dir_all(root.join("config/herdr-core")).unwrap();
-        let lock =
-            std::fs::File::options().create(true).truncate(false).write(true).open(root.join("owner.lock")).unwrap();
-        assert!(herdr_core::platform::try_lock(&lock));
-        let token = herdr_core::platform::random_hex() + &herdr_core::platform::random_hex();
-        let guardian = guardian::Guardian::new(&root, std::path::Path::new(env!("CARGO_BIN_EXE_nhc")), Some(&token));
-        Self(root, token, Some(lock), guardian)
-    }
-    fn cmd(&self) -> Command {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_nhc"));
-        c.env_clear()
-            .env("PATH", std::env::var("PATH").unwrap_or_default())
-            .env("NEARSHELL_HC_TEST_ROOT", &self.0)
-            .env("NEARSHELL_TEST_SESSION_ID", &self.3.nonce)
-            .env("HOME", self.0.join("wrong-home"))
-            .env("XDG_CONFIG_HOME", self.0.join("wrong-xdg"))
-            .env("XDG_STATE_HOME", self.0.join("wrong-state"))
-            .env("XDG_RUNTIME_DIR", self.0.join("wrong-run"));
-        c
-    }
-    fn config(&self, text: &str) {
-        std::fs::write(
-            self.0.join("config/herdr-core/config.toml"),
-            format!("owner_token_sha256 = '{}'\n{text}", herdr_core::owner::verifier(&self.1)),
-        )
-        .unwrap();
-        guardian::Guardian::register(&self.0, std::path::Path::new(env!("CARGO_BIN_EXE_nhc")), Some(&self.1));
-    }
-    fn owner_cmd(&self) -> Command {
-        let mut cmd = self.cmd();
-        cmd.args(["--owner-token", &self.1]);
-        cmd
-    }
-    fn start(&self) -> Value {
-        value(self.owner_cmd().args(["server", "start"]).output().unwrap())
-    }
-    fn socket(&self) -> PathBuf {
-        self.0.join("run/c.sock")
-    }
-}
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        self.2.take(); // Guardian acquires the owner lease before authorized stop.
-        let clean = self.3.finish();
-        if clean {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-        assert!(clean || std::thread::panicking(), "test_guardian_cleanup_unconfirmed");
-    }
-}
-fn value(out: Output) -> Value {
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    serde_json::from_slice(&out.stdout).unwrap()
-}
-fn error(out: Output, kind: &str) {
-    assert!(!out.status.success());
-    let v: Value = serde_json::from_slice(&out.stderr).unwrap();
-    assert_eq!(v["error"]["kind"], kind, "{v}");
-}
+#[path = "common/managed.rs"]
+mod scratch;
+use scratch::{Scratch, error, rpc, value};
+
 #[test]
 fn managed_addressing_fails_closed_and_ignores_shell_xdg() {
     let s = Scratch::new();
@@ -165,10 +105,6 @@ fn scratch_build_has_no_production_fallback_and_cannot_install_upstream() {
     assert_eq!(result.unwrap_err().kind, "managed_distribution");
 }
 
-fn rpc(s: &Scratch, method: &str, params: Value) -> Result<Value, herdr_core::rpc::RpcError> {
-    let stream = herdr_core::platform::connect(&s.socket()).unwrap();
-    herdr_core::client::call(&stream, method, params)
-}
 fn read_eventually(path: &std::path::Path) -> String {
     let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {

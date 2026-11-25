@@ -114,7 +114,7 @@ pub struct HelloParams {
 
 /// Distribution identity, independent of the upstream semantic version.
 /// Sequence zero and an unversioned commit identify a development build.
-#[derive(Serialize, JsonSchema)]
+#[derive(Serialize, Deserialize, JsonSchema, Clone, PartialEq, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct BuildInfo {
     pub commit: String,
@@ -855,6 +855,7 @@ pub struct MachineAddParams {
     pub name: Option<String>,
     /// The hc session on that machine (default: its default).
     #[arg(long)]
+    #[cfg_attr(feature = "nearshell", arg(hide = true))] // one remote core per machine
     pub session: Option<String>,
 }
 

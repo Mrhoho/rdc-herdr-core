@@ -174,7 +174,7 @@ methods! { Ctx<'_>;
         errors ["not_found", "machine_unknown", "connection_closed"];
     "machine.add" => machine_add, MachineAddParams => crate::machines::Machine,
         "Add another machine: dial it over ssh, check that hc answers there, and keep it under a name.",
-        errors ["invalid_params", "name_taken", "already_added", "unreachable", "hc_missing", "incompatible"];
+        errors ["invalid_params", "name_taken", "already_added", "unreachable", "hc_missing", "incompatible", "needs_update", "machine_newer", "build_conflict", "unsupported_platform"];
     "machine.list" => machine_list, Empty => MachineListResult,
         "The machines this core has added.",
         errors [];
@@ -693,6 +693,9 @@ async fn machine_add(core: Ctx<'_>, p: MachineAddParams) -> Result<crate::machin
     crate::machines::check_target(to)?;
     if let Some(session) = &p.session {
         crate::addr::check_name(session)?;
+        if cfg!(feature = "nearshell") {
+            return Err(RpcError::invalid_params("a Nearshell machine runs one remote core: no session"));
+        }
     }
     let name = |st: &crate::runtime::State| match &p.name {
         Some(name) => free_name(core, st, name).map(|_| name.clone()),
@@ -716,6 +719,7 @@ async fn machine_add(core: Ctx<'_>, p: MachineAddParams) -> Result<crate::machin
         id: text("id"),
         host: text("name"),
         version: hello["version"].as_str().unwrap_or_default().into(),
+        build: serde_json::from_value(hello["build"].clone()).ok(),
         keeps_running_after_logout: hello["keeps_running_after_logout"].as_bool(),
         logout_linger_user: hello["logout_linger_user"].as_str().map(String::from),
     };

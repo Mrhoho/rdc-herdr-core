@@ -575,6 +575,18 @@
       },
       "Machine": {
         "properties": {
+          "build": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BuildInfo"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Its build identity when last connected (null: none sent, or an old record)."
+          },
           "host": {
             "description": "What that core calls itself (its hostname).",
             "type": "string"
@@ -655,6 +667,18 @@
       "MachineView": {
         "description": "A machine as `machine ls` and `ls` show it: its profile and its line now.",
         "properties": {
+          "build": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BuildInfo"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Its build identity when last connected (null: none sent, or an old record)."
+          },
           "host": {
             "description": "What that core calls itself (its hostname).",
             "type": "string"
@@ -700,7 +724,7 @@
             ]
           },
           "state": {
-            "description": "connecting, connected, needs_login or unreachable.",
+            "description": "connecting, connected, needs_login, needs_update or unreachable; on\nNearshell builds also machine_newer, build_conflict and incompatible.",
             "type": "string"
           },
           "target": {
@@ -4276,6 +4300,34 @@
             "kind": "incompatible"
           },
           "message": "incompatible"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "needs_update"
+          },
+          "message": "needs_update"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "machine_newer"
+          },
+          "message": "machine_newer"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "build_conflict"
+          },
+          "message": "build_conflict"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "unsupported_platform"
+          },
+          "message": "unsupported_platform"
         }
       ],
       "name": "machine.add",
