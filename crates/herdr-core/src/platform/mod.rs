@@ -36,11 +36,12 @@ mod macos_session;
 mod macos_shutdown;
 
 /// Whether this core's systemd user manager stays alive after the last logout,
-/// and the account an administrator can enable lingering for.
-pub fn logout_linger() -> (Option<bool>, Option<String>) {
+/// and the account an administrator can enable lingering for. Right after the
+/// core starts this waits (briefly) for its first look.
+pub async fn logout_linger() -> (Option<bool>, Option<String>) {
     #[cfg(target_os = "linux")]
     {
-        systemd::logout_linger()
+        systemd::observed_logout_linger().await
     }
     #[cfg(not(target_os = "linux"))]
     {

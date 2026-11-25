@@ -13,6 +13,7 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::str::Bytes;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// What the login session decides. Programs get it from the user manager as
 /// it is now; a service takes the caller's only when the caller isn't an ssh
@@ -314,11 +315,39 @@ pub fn logout_linger() -> (Option<bool>, Option<String>) {
     LOGOUT_LINGER.lock().unwrap_or_else(|p| p.into_inner()).clone()
 }
 
+static OBSERVING: AtomicBool = AtomicBool::new(false);
+static OBSERVED: AtomicBool = AtomicBool::new(false);
+static FIRST_OBSERVED: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+/// `logout_linger` once the first look since this core started is in: a core
+/// started by the connection asking (an ssh `connect`) would otherwise answer
+/// "unknown" a moment before it knows, and nobody would be warned.
+pub async fn observed_logout_linger() -> (Option<bool>, Option<String>) {
+    if OBSERVING.load(Ordering::Acquire) {
+        first_observation(&OBSERVED, &FIRST_OBSERVED, std::time::Duration::from_secs(2)).await;
+    }
+    logout_linger()
+}
+
+/// Waits until `observed`, at most `limit` (one look takes at most busctl's 1 s).
+async fn first_observation(observed: &AtomicBool, first: &tokio::sync::Notify, limit: std::time::Duration) {
+    let notified = first.notified();
+    tokio::pin!(notified);
+    notified.as_mut().enable();
+    if !observed.load(Ordering::Acquire) {
+        let _ = tokio::time::timeout(limit, notified).await;
+    }
+}
+
 pub fn start_logout_linger() {
+    OBSERVING.store(true, Ordering::Release);
     tokio::spawn(async {
         loop {
             let observed = observe_logout_linger().await;
             *LOGOUT_LINGER.lock().unwrap_or_else(|p| p.into_inner()) = observed;
+            if !OBSERVED.swap(true, Ordering::AcqRel) {
+                FIRST_OBSERVED.notify_waiters();
+            }
             tokio::select! {
                 _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {},
                 _ = LINGER_CHANGED.notified() => {},
@@ -569,6 +598,27 @@ mod tests {
 
     fn map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
         pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_answer_waits_for_the_first_look_only() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::{Duration, Instant};
+        let (observed, first) = (AtomicBool::new(false), tokio::sync::Notify::new());
+        let start = Instant::now();
+        let look = async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            observed.store(true, Ordering::Release);
+            first.notify_waiters();
+        };
+        tokio::join!(super::first_observation(&observed, &first, Duration::from_secs(10)), look);
+        assert!(start.elapsed() >= Duration::from_millis(50) && start.elapsed() < Duration::from_secs(5));
+        let start = Instant::now();
+        super::first_observation(&observed, &first, Duration::from_secs(10)).await;
+        assert!(start.elapsed() < Duration::from_secs(1), "once looked, no wait");
+        let start = Instant::now();
+        super::first_observation(&AtomicBool::new(false), &first, Duration::from_millis(100)).await;
+        assert!(start.elapsed() >= Duration::from_millis(100) && start.elapsed() < Duration::from_secs(5));
     }
 
     #[test]

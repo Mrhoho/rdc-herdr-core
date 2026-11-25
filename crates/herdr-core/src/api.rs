@@ -229,7 +229,7 @@ async fn hello(core: Ctx<'_>, p: HelloParams) -> Result<HelloResult, RpcError> {
             format!("this core speaks generation {GENERATION}"),
         ));
     }
-    let (keeps_running_after_logout, logout_linger_user) = crate::platform::logout_linger();
+    let (keeps_running_after_logout, logout_linger_user) = crate::platform::logout_linger().await;
     Ok(HelloResult {
         generation: GENERATION,
         version: version(),
@@ -245,7 +245,7 @@ async fn hello(core: Ctx<'_>, p: HelloParams) -> Result<HelloResult, RpcError> {
 }
 
 async fn server_status(core: Ctx<'_>, _: Empty) -> Result<StatusResult, RpcError> {
-    let (keeps_running_after_logout, logout_linger_user) = crate::platform::logout_linger();
+    let (keeps_running_after_logout, logout_linger_user) = crate::platform::logout_linger().await;
     let st = core.lock();
     let live = st.reg.terminals.values().filter(|t| t.is_live()).count();
     let holders: Vec<HolderInfo> = st
