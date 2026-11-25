@@ -3,6 +3,8 @@ use crate::events::{Filter, Sink};
 use crate::paths::Paths;
 use std::sync::atomic::AtomicBool;
 
+mod marks;
+
 #[tokio::test]
 async fn removing_or_replacing_a_machine_drops_its_status_poll() {
     for replacement in [false, true] {
@@ -599,6 +601,14 @@ type Frames = mpsc::UnboundedReceiver<Vec<u8>>;
 impl Attached {
     /// Attached over a first line, whose stream there is `there`.
     async fn new(there: u32) -> (Attached, Arc<Line>, Frames) {
+        let mut f = Attached::start();
+        let (line, mut rx) = f.up();
+        f.attach(&line, &mut rx, json!({"terminal": "t1"}), json!({"channel": there})).await.1.unwrap();
+        (f, line, rx)
+    }
+
+    /// A core with `away` added and a viewer's connection, not attached yet.
+    fn start() -> Attached {
         let root = crate::test_tmp().join(format!("hc-relay-{}-{}", std::process::id(), crate::platform::random_hex()));
         let paths = Paths {
             socket: root.join("core.sock"),
@@ -612,21 +622,39 @@ impl Attached {
             "name": "away", "target": "away", "id": "away", "host": "away", "version": "test"
         }))
         .unwrap();
-        let mut f = Attached { core, root, machine, conn: Arc::new(Conn::default()), here: 0 };
-        let (line, mut rx) = f.up();
-        let (c, conn, m) = (f.core.clone(), f.conn.clone(), f.machine.clone());
-        let task = tokio::spawn(async move { attach(&c, &conn, &m, json!({"terminal": "t1"})).await });
+        Attached { core, root, machine, conn: Arc::new(Conn::default()), here: 0 }
+    }
+
+    /// `params` attached over `line`, which answers with `result`: the call
+    /// there, and what the viewer is answered.
+    async fn attach(
+        &mut self,
+        line: &Arc<Line>,
+        rx: &mut Frames,
+        params: Value,
+        result: Value,
+    ) -> (Value, Result<Value, RpcError>) {
+        let (c, conn, m) = (self.core.clone(), self.conn.clone(), self.machine.clone());
+        let task = tokio::spawn(async move { attach(&c, &conn, &m, params).await });
         let request: Value = serde_json::from_slice(&rx.recv().await.unwrap()[wire::HEADER..]).unwrap();
-        line.take_reply(json!({"id": request["id"], "result": {"channel": there}}));
-        f.here = task.await.unwrap().unwrap()["channel"].as_u64().unwrap() as u32;
-        f.conn.with(|out| out.resume(f.here));
-        (f, line, rx)
+        line.take_reply(json!({"id": request["id"], "result": result}));
+        let reply = task.await.unwrap();
+        if let Ok(reply) = &reply {
+            self.here = reply["channel"].as_u64().unwrap() as u32;
+            self.conn.with(|out| out.resume(self.here));
+        }
+        (request, reply)
     }
 
     /// A new line comes up: the machine's line from now on.
     fn up(&self) -> (Arc<Line>, Frames) {
+        self.up_with(json!({}))
+    }
+
+    /// A new line whose core there said `hello`.
+    fn up_with(&self, hello: Value) -> (Arc<Line>, Frames) {
         let (frames, rx) = mpsc::unbounded_channel();
-        let line = Line::new(frames, &json!({}));
+        let line = Line::new(frames, &hello);
         self.core.lock().lines.insert(self.machine.id.clone(), LineState::Connected(line.clone()));
         (line, rx)
     }

@@ -35,6 +35,12 @@ pub(super) async fn reattach(core: Arc<Core>, m: Machine, line: Arc<Line>) {
     waiting.sort_by_key(|(_, active_at)| *active_at);
     for (key @ (_, here), was_active_at) in waiting {
         let Some(r) = core.lock().relayed.get(&key).cloned() else { continue };
+        // The core there no longer paints marks: nothing it sends is a paint this viewer can follow.
+        if r.params["marks"] == true && !paint_marks(&line) {
+            core.lock().relayed.remove(&key);
+            r.conn.with(|out| out.close(here, b""));
+            continue;
+        }
         // The screen is painted again; the viewer already has its history.
         let mut params = r.params.clone();
         params["history"] = 0.into();
@@ -122,14 +128,25 @@ pub(super) fn relay_out(core: &Core, line: &Line, there: u32, kind: u8, payload:
     };
     let Some(sink) = sink else { return };
     let (conn, here) = (&sink.0, sink.1);
-    match kind {
+    let open = match kind {
         wire::DATA => deliver(&sink, payload),
-        wire::RESIZE if payload.len() == 4 => conn.with(|out| out.ordered_resize(here, payload)),
+        wire::MARK => mark(&sink, payload),
+        // A marked viewer was told no grid comes: each paint says its own.
+        wire::RESIZE if payload.len() == 4 && lock(&sink.2).marks.is_none() => {
+            conn.with(|out| out.ordered_resize(here, payload));
+            true
+        }
         wire::CLOSE => {
             core.lock().relayed.remove(&(conn_key(conn), here));
             conn.with(|out| out.finish(here, payload));
+            true
         }
-        _ => {}
+        _ => true,
+    };
+    // Closed here (all locks above released): it ends there too.
+    if !open {
+        core.lock().relayed.remove(&(conn_key(conn), here));
+        line.close_stream(there);
     }
 }
 
@@ -143,18 +160,27 @@ pub(super) fn lost_line(line: &Line, machine: &str) {
     }
 }
 
-/// Bytes into a relayed viewer's stream, counted for its credit.
-fn deliver((conn, here, relay): &Sink, bytes: &[u8]) {
+/// Bytes into a relayed viewer's stream, counted for its credit. False: it
+/// was closed here.
+fn deliver((conn, here, relay): &Sink, bytes: &[u8]) -> bool {
     let mut relay = lock(relay);
-    let mut back = 0;
+    let marked = relay.marks.is_some();
+    let (mut back, mut open) = (0, true);
     conn.with(|out| {
         if !out.has_stream(*here) {
             return;
         }
         let queued = out.queued(*here);
         // Too far behind, it drops what it had not sent; nothing here paints
-        // it again, but the stream there gets back what was its share.
-        let dropped = if out.data(*here, bytes) { 0 } else { queued + bytes.len() };
+        // it again, but the stream there gets back what was its share. A
+        // marked one would be left inside a paint it can't finish: it ends.
+        let fits = out.data(*here, bytes);
+        if !fits && marked {
+            out.close(*here, wire::PAINT_LIMIT);
+            open = false;
+            return;
+        }
+        let dropped = if fits { 0 } else { queued + bytes.len() };
         relay.ledger.enqueued(bytes.len());
         back = relay.ledger.dropped(dropped);
     });
@@ -163,6 +189,29 @@ fn deliver((conn, here, relay): &Sink, bytes: &[u8]) {
     {
         let _ = frames.send(wire::encode(*there, wire::CREDIT, &back.to_le_bytes()));
     }
+    open
+}
+
+/// A paint mark into a marked viewer's stream, as the viewer is to read it
+/// (an unmarked one never asked for them). False: it was closed here.
+fn mark((conn, here, relay): &Sink, payload: &[u8]) -> bool {
+    let mut relay = lock(relay);
+    let Some(marks) = &mut relay.marks else { return true };
+    let mut open = true;
+    conn.with(|out| {
+        if !out.has_stream(*here) {
+            return;
+        }
+        open = match marks.rewrite(payload) {
+            Ok(Some(mark)) => out.mark(*here, &mark),
+            Ok(None) => true,
+            Err(()) => {
+                out.close(*here, b"");
+                false
+            }
+        };
+    });
+    open
 }
 
 /// Whether `line` is no longer the one to the machine: closed, its writer
@@ -191,6 +240,10 @@ pub(super) fn automatic_input(line: &Line, reply: &Value) -> bool {
     line.features.iter().any(|f| f == "automatic_input") && reply["automatic_input"] == true
 }
 
+fn paint_marks(line: &Line) -> bool {
+    line.features.iter().any(|f| f == "paint-marks")
+}
+
 pub(super) fn negotiate_resize(line: &Line, params: &mut Value) {
     if params["resize_notifications"] == true && !line.features.iter().any(|f| f == "resize_notifications") {
         params["resize_notifications"] = false.into();
@@ -200,18 +253,24 @@ pub(super) fn negotiate_resize(line: &Line, params: &mut Value) {
 /// Opens a viewer here on a terminal there: the stream channel there is
 /// relayed to a new channel on this connection, both ways.
 pub async fn attach(core: &Core, conn: &Arc<Conn>, m: &Machine, mut params: Value) -> Result<Value, RpcError> {
-    if params.get("marks").and_then(Value::as_bool) == Some(true) {
-        return Err(RpcError::new(
-            "marks_local_only",
-            "paint marks require a direct core connection",
-            "connect directly to the terminal core",
-        ));
-    }
     conn.admit(&core.lock())?;
     let line = line(core, m).await?;
+    let marked = params.get("marks").and_then(Value::as_bool) == Some(true);
+    // Before the call: a viewer there would already be painting unmarked.
+    if marked && !paint_marks(&line) {
+        return Err(RpcError::new(
+            "marks_local_only",
+            format!("the core on {} does not support paint marks", m.name),
+            "update the core there, or attach without marks",
+        ));
+    }
     negotiate_resize(&line, &mut params);
+    if marked {
+        // The core there sends a marked viewer no RESIZE, whatever it confirms.
+        params["resize_notifications"] = false.into();
+    }
     let here = conn.new_channel();
-    let relay = relay::Shared::default();
+    let relay = relay::Shared::new(Mutex::new(if marked { relay::Relay::marked() } else { Default::default() }));
     {
         let st = core.lock();
         conn.admit(&st)?;

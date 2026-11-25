@@ -49,6 +49,55 @@ fn the_same_build_connects_by_its_path_over_ssh_and_via() {
 }
 
 #[test]
+fn a_marked_viewer_on_the_hub_gets_the_paint_of_a_terminal_there() {
+    use herdr_core::wire;
+    use std::io::{BufRead, BufReader, Read, Write};
+    let w = World::new(Path::new(NHC));
+    w.place(Path::new(NHC));
+    w.rpc("machine.add", json!({"target": "far"})).unwrap();
+    w.state_becomes("far", "connected");
+    let run = json!({"on": "far", "argv": ["sh", "-c", "echo marked-ready; exec sleep 100"]});
+    let t = w.rpc("terminal.run", run).unwrap()["address"].as_str().unwrap().to_string();
+    let stream = std::os::unix::net::UnixStream::connect(w.hub.join("run/c.sock")).unwrap();
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(15))).unwrap();
+    let mut writer = stream.try_clone().unwrap();
+    let mut reader = BufReader::new(stream);
+    writeln!(writer, r#"{{"jsonrpc":"2.0","id":0,"method":"hello","params":{{"framed":true}}}}"#).unwrap();
+    reader.read_line(&mut String::new()).unwrap();
+    let params = json!({"terminal": t, "cols": 80, "rows": 24, "marks": true});
+    let attach = json!({"jsonrpc": "2.0", "id": 1, "method": "terminal.attach", "params": params});
+    writer.write_all(&wire::encode(0, wire::DATA, attach.to_string().as_bytes())).unwrap();
+    let mut frame = || {
+        let mut header = [0; wire::HEADER];
+        reader.read_exact(&mut header).unwrap();
+        let (channel, kind, len) = wire::decode_header(&header).unwrap();
+        let mut payload = vec![0; len];
+        reader.read_exact(&mut payload).unwrap();
+        (channel, kind, payload)
+    };
+    let (_, _, reply) = frame();
+    let reply: Value = serde_json::from_slice(&reply).unwrap();
+    let channel = reply["result"]["channel"].as_u64().unwrap_or_else(|| panic!("{reply}")) as u32;
+    let (mut marks, mut text) = (Vec::new(), Vec::new());
+    while marks.len() < 2 {
+        let (ch, kind, payload) = frame();
+        assert_eq!(ch, channel);
+        match kind {
+            wire::MARK => marks.push(serde_json::from_slice::<Value>(&payload).unwrap()),
+            wire::DATA if marks.len() == 1 => text.extend(payload),
+            _ => panic!("frame {kind} outside the paint: {marks:?}"),
+        }
+    }
+    let begin = &marks[0];
+    assert_eq!(
+        (&begin["type"], &begin["reason"], &begin["paintGen"]),
+        (&json!("paint_begin"), &json!("attach"), &json!(1))
+    );
+    assert_eq!(marks[1], json!({"type": "paint_end", "paintGen": 1}));
+    assert!(String::from_utf8_lossy(&text).contains("marked-ready"));
+}
+
+#[test]
 fn a_missing_core_is_hc_missing_after_one_dial_and_windows_is_not_supported() {
     let w = World::new(Path::new(NHC));
     let e = w.rpc("machine.add", json!({"target": "far"})).unwrap_err();

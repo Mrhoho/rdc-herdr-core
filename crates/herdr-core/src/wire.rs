@@ -32,6 +32,11 @@ pub const WINDOW: usize = 256 * 1024;
 pub const MAX_PENDING: usize = 4 << 20;
 /// Replies kept for a client that stopped reading; past it, it is dropped.
 pub const MAX_CONTROL: usize = 64 << 20;
+/// Relayed MARKs kept for a viewer that stopped reading, `MAX_PENDING` of
+/// them at most; past either, its stream closes (`PAINT_LIMIT`).
+pub const MAX_MARKS: usize = 1024;
+/// A stream closed though its terminal runs on: what it held grew too big.
+pub const PAINT_LIMIT: &[u8] = br#"{"reason":"paint_limit"}"#;
 const CHUNK: usize = 16 * 1024;
 
 pub fn encode(channel: u32, kind: u8, payload: &[u8]) -> Vec<u8> {
@@ -191,10 +196,12 @@ impl Conn {
 struct Stream {
     viewer: Option<ViewerQueue>,
     pending: VecDeque<u8>,
-    resizes: VecDeque<(usize, Vec<u8>)>,
+    /// RESIZE and MARK frames in the order they came, each due once the
+    /// bytes queued before it are out: (bytes of `pending` before it, kind, payload).
+    boundaries: VecDeque<(usize, u8, Vec<u8>)>,
     paused: bool,
     credit: usize,
-    /// The program ended: CLOSE (with this reason) once `pending` is out.
+    /// The program ended: CLOSE (with this reason) once `pending` and its MARKs are out.
     ending: Option<Vec<u8>>,
 }
 
@@ -230,7 +237,7 @@ impl Outbox {
             Stream {
                 viewer: None,
                 pending: VecDeque::new(),
-                resizes: VecDeque::new(),
+                boundaries: VecDeque::new(),
                 paused: false,
                 credit: WINDOW,
                 ending: None,
@@ -265,16 +272,28 @@ impl Outbox {
     pub fn resize(&mut self, channel: u32, size: &[u8]) {
         if let Some(s) = self.streams.get_mut(&channel) {
             s.pending.clear();
-            s.resizes.clear();
-            s.resizes.push_back((0, size.to_vec()));
+            s.boundaries.clear();
+            s.boundaries.push_back((0, RESIZE, size.to_vec()));
         }
     }
 
     /// Relay boundaries keep bytes already charged to the upstream credit window.
     pub fn ordered_resize(&mut self, channel: u32, size: &[u8]) {
         if let Some(s) = self.streams.get_mut(&channel) {
-            s.resizes.push_back((s.pending.len(), size.to_vec()));
+            s.boundaries.push_back((s.pending.len(), RESIZE, size.to_vec()));
         }
+    }
+
+    /// A relayed MARK, after the bytes queued so far. It needs no credit: it
+    /// waits only for them. False: too many waited, and the stream is closed.
+    pub fn mark(&mut self, channel: u32, mark: &[u8]) -> bool {
+        let Some(s) = self.streams.get_mut(&channel) else { return true };
+        s.boundaries.push_back((s.pending.len(), MARK, mark.to_vec()));
+        if s.boundaries.len() > MAX_MARKS || s.boundaries.iter().map(|(_, _, p)| p.len()).sum::<usize>() > MAX_PENDING {
+            self.close(channel, PAINT_LIMIT);
+            return false;
+        }
+        true
     }
 
     pub fn open_viewer(&mut self, channel: u32, marks: bool, budget: std::sync::Arc<ghostty_vt::budget::Budget>) {
@@ -282,7 +301,7 @@ impl Outbox {
         if let Some(queue) = ViewerQueue::new(marks, budget) {
             self.streams.get_mut(&channel).unwrap().viewer = Some(queue);
         } else {
-            self.close(channel, br#"{"reason":"paint_limit"}"#);
+            self.close(channel, PAINT_LIMIT);
         }
     }
 
@@ -313,7 +332,7 @@ impl Outbox {
     ) {
         let Some(q) = self.viewer(channel) else { return };
         if q.enqueue(source, conn, reason, replace, loss).is_err() {
-            self.close(channel, br#"{"reason":"paint_limit"}"#);
+            self.close(channel, PAINT_LIMIT);
         }
     }
 
@@ -324,7 +343,8 @@ impl Outbox {
     }
 
     /// Ends a stream once its queued output is delivered (the program ended:
-    /// its last screen is what the viewer most wants to see).
+    /// its last screen is what the viewer most wants to see), including the
+    /// end of its last paint.
     pub fn finish(&mut self, channel: u32, reason: &[u8]) {
         match self.streams.get_mut(&channel) {
             Some(s) => s.ending = Some(reason.to_vec()),
@@ -341,10 +361,12 @@ impl Outbox {
         }
         if s.pending.len() + bytes.len() > MAX_PENDING {
             s.pending.clear();
-            let latest = s.resizes.pop_back();
-            s.resizes.clear();
-            if let Some((_, size)) = latest {
-                s.resizes.push_back((0, size));
+            // The repaint keeps the latest grid; marks of dropped paints go with them.
+            let latest = s.boundaries.iter().rposition(|(_, kind, _)| *kind == RESIZE);
+            let latest = latest.and_then(|at| s.boundaries.remove(at));
+            s.boundaries.clear();
+            if let Some((_, kind, size)) = latest {
+                s.boundaries.push_back((0, kind, size));
             }
             return false;
         }
@@ -381,8 +403,13 @@ impl Outbox {
             self.control_bytes -= frame.len();
             return Some(frame);
         }
+        // A grid announced for bytes that will never come is left out.
         if let Some((&channel, _)) = self.streams.iter().find(|(_, s)| {
-            !s.paused && s.ending.is_some() && s.pending.is_empty() && s.viewer.as_ref().is_none_or(|q| q.empty())
+            !s.paused
+                && s.ending.is_some()
+                && s.pending.is_empty()
+                && s.boundaries.iter().all(|(_, kind, _)| *kind != MARK)
+                && s.viewer.as_ref().is_none_or(|q| q.empty())
         }) {
             let reason = self.streams.remove(&channel).and_then(|s| s.ending).unwrap_or_default();
             return Some(encode(channel, CLOSE, &reason));
@@ -404,20 +431,23 @@ impl Outbox {
                     Ok(None) => continue,
                     Err(()) => {
                         self.streams.remove(&channel);
-                        return Some(encode(channel, CLOSE, br#"{"reason":"paint_limit"}"#));
+                        return Some(encode(channel, CLOSE, PAINT_LIMIT));
                     }
                 }
+            }
+            // A grid waits for credit and the paint it announces; a mark waits for neither.
+            if let Some((0, kind, _)) = s.boundaries.front()
+                && (*kind == MARK || (s.credit > 0 && !s.pending.is_empty()))
+            {
+                let (_, kind, payload) = s.boundaries.pop_front().unwrap();
+                return Some(encode(channel, kind, &payload));
             }
             if s.credit == 0 || s.pending.is_empty() {
                 continue;
             }
-            if s.resizes.front().is_some_and(|(at, _)| *at == 0) {
-                let (_, size) = s.resizes.pop_front().unwrap();
-                return Some(encode(channel, RESIZE, &size));
-            }
-            let boundary = s.resizes.front().map_or(usize::MAX, |(at, _)| *at);
+            let boundary = s.boundaries.front().map_or(usize::MAX, |(at, _, _)| *at);
             let n = s.pending.len().min(s.credit).min(CHUNK).min(boundary);
-            for (at, _) in &mut s.resizes {
+            for (at, _, _) in &mut s.boundaries {
                 *at -= n;
             }
             if n == 0 {
@@ -479,6 +509,103 @@ mod tests {
         assert_eq!(out.next_frame().unwrap()[4], RESIZE);
         assert_eq!(&out.next_frame().unwrap()[HEADER..], b"paint");
         assert!(out.next_frame().is_none());
+    }
+
+    /// Every frame the stream has ready now: (kind, payload).
+    fn frames(out: &mut Outbox) -> Vec<(u8, Vec<u8>)> {
+        std::iter::from_fn(|| out.next_frame()).map(|f| (f[4], f[HEADER..].to_vec())).collect()
+    }
+
+    /// A stream whose window the viewer has used up.
+    fn stalled(out: &mut Outbox, channel: u32) {
+        out.open(channel);
+        out.data(channel, &vec![b'a'; WINDOW]);
+        while out.next_frame().is_some() {}
+    }
+
+    #[test]
+    fn marks_and_grids_go_out_where_they_came_among_the_bytes() {
+        let mut out = Outbox::default();
+        out.open(1);
+        out.data(1, b"a");
+        out.mark(1, b"m1");
+        out.ordered_resize(1, &[90, 0, 30, 0]);
+        out.data(1, b"b");
+        out.mark(1, b"m2");
+        let expected = [(DATA, &b"a"[..]), (MARK, b"m1"), (RESIZE, &[90, 0, 30, 0]), (DATA, b"b"), (MARK, b"m2")]
+            .map(|(k, p)| (k, p.to_vec()));
+        assert_eq!(frames(&mut out), expected);
+    }
+
+    #[test]
+    fn a_mark_needs_no_credit_but_never_overtakes_the_bytes_before_it() {
+        let mut out = Outbox::default();
+        stalled(&mut out, 1);
+        out.mark(1, b"begin");
+        assert_eq!(frames(&mut out), [(MARK, b"begin".to_vec())], "no credit, nothing behind it");
+        out.data(1, b"paint");
+        out.mark(1, b"end");
+        assert_eq!(frames(&mut out), [], "the end waits behind the paint");
+        out.credit(1, 5);
+        assert_eq!(frames(&mut out), [(DATA, b"paint".to_vec()), (MARK, b"end".to_vec())]);
+    }
+
+    #[test]
+    fn a_paused_stream_sends_no_mark() {
+        let mut out = Outbox::default();
+        out.open_paused(1);
+        out.mark(1, b"begin");
+        assert_eq!(frames(&mut out), [], "the viewer has no channel for it yet");
+        out.resume(1);
+        assert_eq!(frames(&mut out), [(MARK, b"begin".to_vec())]);
+    }
+
+    #[test]
+    fn an_ended_stream_closes_after_its_last_paint_end() {
+        let mut out = Outbox::default();
+        stalled(&mut out, 1);
+        out.data(1, b"paint");
+        out.mark(1, b"end");
+        out.finish(1, b"{}");
+        assert_eq!(frames(&mut out), []);
+        out.credit(1, 5);
+        assert_eq!(frames(&mut out), [(DATA, b"paint".to_vec()), (MARK, b"end".to_vec()), (CLOSE, b"{}".to_vec())]);
+        // A grid with no paint behind it is not waited for.
+        out.open(2);
+        out.ordered_resize(2, &[90, 0, 30, 0]);
+        out.finish(2, b"{}");
+        assert_eq!(frames(&mut out), [(CLOSE, b"{}".to_vec())]);
+    }
+
+    #[test]
+    fn falling_too_far_behind_keeps_the_latest_grid_but_no_mark() {
+        let mut out = Outbox::default();
+        stalled(&mut out, 1);
+        out.data(1, b"x");
+        out.ordered_resize(1, &[80, 0, 24, 0]);
+        out.mark(1, b"end");
+        out.ordered_resize(1, &[90, 0, 30, 0]);
+        out.mark(1, b"begin");
+        assert!(!out.data(1, &vec![0; MAX_PENDING]));
+        out.data(1, b"\x18paint");
+        out.credit(1, 100);
+        assert_eq!(frames(&mut out), [(RESIZE, vec![90, 0, 30, 0]), (DATA, b"\x18paint".to_vec())]);
+    }
+
+    #[test]
+    fn too_many_marks_waiting_close_the_stream() {
+        let mut out = Outbox::default();
+        stalled(&mut out, 1);
+        out.data(1, b"x");
+        assert!((0..MAX_MARKS).all(|_| out.mark(1, b"m")));
+        assert!(!out.mark(1, b"m"));
+        assert_eq!(frames(&mut out), [(CLOSE, PAINT_LIMIT.to_vec())]);
+        assert!(!out.has_stream(1));
+        stalled(&mut out, 2);
+        out.data(2, b"x");
+        assert!(out.mark(2, &vec![b'm'; MAX_PENDING - 1]));
+        assert!(!out.mark(2, b"mm"), "nor more than MAX_PENDING of them");
+        assert_eq!(frames(&mut out), [(CLOSE, PAINT_LIMIT.to_vec())]);
     }
 
     #[test]
