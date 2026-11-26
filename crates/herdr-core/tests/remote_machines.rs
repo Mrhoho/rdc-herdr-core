@@ -11,7 +11,7 @@ use std::path::Path;
 mod guardian;
 #[path = "common/remote.rs"]
 mod remote;
-use remote::{NHC, World, build_info, value, variants};
+use remote::{NHC, World, build_info, eventually, value, variants};
 
 fn hello_without_build() -> Value {
     json!({"result": {"generation": herdr_core::api::GENERATION, "version": "0.1.22",
@@ -231,4 +231,39 @@ fn each_remote_build_gets_its_outcome_and_only_connect_redials() {
     w.rpc("machine.rm", json!({"machine": "far"})).unwrap();
     let e = w.cli_error(&["machine", "add", "far", "--install"]);
     assert_eq!((&e["kind"], &e["hint"]), (&json!("machine_newer"), &json!("update Nearshell on this Mac")));
+}
+
+#[test]
+#[ignore = "scripts/check-remote.sh supplies builds of differing identity"]
+fn a_held_machine_is_not_synced_and_its_subscribers_hear_it_held_and_back() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::time::Duration;
+    let [(cur, _), (old, _), ..] = variants();
+    let w = World::new(&cur);
+    w.place(&cur);
+    w.rpc("machine.add", json!({"target": "far"})).unwrap();
+    eventually("synced", || Some(w.view("far")).filter(|m| m["synced"] == true));
+    let stream = std::os::unix::net::UnixStream::connect(w.hub.join("run/c.sock")).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(15))).unwrap();
+    let mut writer = stream.try_clone().unwrap();
+    let mut reader = BufReader::new(stream);
+    writeln!(writer, "{}", json!({"jsonrpc": "2.0", "id": 1, "method": "events.subscribe", "params": {}})).unwrap();
+    let mut told = |state: &str, synced: bool| loop {
+        let mut line = String::new();
+        reader.read_line(&mut line).expect("a machine event");
+        let msg: Value = serde_json::from_str(&line).unwrap();
+        let data = &msg["params"]["data"];
+        if msg["params"]["type"] == "machine" && data["state"] == state && data["synced"] == synced {
+            return data.clone();
+        }
+    };
+    w.place(&old);
+    w.stop_far();
+    let held = told("needs_update", false);
+    assert!(held["why"].as_str().is_some_and(|why| !why.is_empty()), "{held}");
+    assert_eq!(w.view("far")["synced"], false);
+    w.place(&cur);
+    w.stop_far();
+    assert_eq!(w.rpc("machine.connect", json!({"machine": "far"})).unwrap()["state"], "connected");
+    told("connected", true);
 }

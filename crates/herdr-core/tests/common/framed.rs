@@ -20,11 +20,21 @@ pub struct Framed {
 
 impl Framed {
     pub fn open(s: &Session) -> Framed {
+        Framed::open_with(s, json!({"framed": true}))
+    }
+
+    /// As another core that dialed in (`core` in its hello): served as a peer.
+    pub fn open_as_peer(s: &Session, id: &str, name: &str) -> Framed {
+        Framed::open_with(s, json!({"framed": true, "core": {"id": id, "name": name}, "calls_you": "here"}))
+    }
+
+    fn open_with(s: &Session, hello: Value) -> Framed {
         s.json(&["server", "start"]);
         let stream = UnixStream::connect(s.socket()).unwrap();
         let mut reader = BufReader::new(stream.try_clone().unwrap());
         let mut writer = stream;
-        writeln!(writer, r#"{{"jsonrpc":"2.0","id":0,"method":"hello","params":{{"framed":true}}}}"#).unwrap();
+        let hello = json!({"jsonrpc": "2.0", "id": 0, "method": "hello", "params": hello});
+        writeln!(writer, "{hello}").unwrap();
         let mut line = String::new();
         reader.read_line(&mut line).unwrap();
         Framed { reader, writer, next_id: 1, stash: VecDeque::new() }

@@ -245,7 +245,10 @@ pub(super) fn line_state(m: &Value) -> String {
         }
     });
     let why = m["why"].as_str().map(|w| format!(" ({w})")).unwrap_or_default();
+    let name = m["name"].as_str().unwrap_or("?");
     match m["state"].as_str() {
+        // Its terminals here are still being brought up to date.
+        Some("connected") if m["synced"] == false => "connected, catching up".into(),
         Some("needs_login") => {
             let keys = if cfg!(windows) { "set up its SSH keys, then " } else { "" };
             format!(
@@ -254,6 +257,18 @@ pub(super) fn line_state(m: &Value) -> String {
                 m["name"].as_str().unwrap_or("?")
             )
         }
+        Some("host_key_unknown") => format!(
+            "host key unknown{}: {CLI_NAME} machine login {name} shows it to check and accept",
+            since.unwrap_or_default()
+        ),
+        Some("host_key_changed") => format!(
+            "host key changed{}: not the one known here; check why, then fix known_hosts yourself",
+            since.unwrap_or_default()
+        ),
+        Some("different_core") => format!(
+            "another core answers{}{why}: {CLI_NAME} machine rm {name}, then add it again",
+            since.unwrap_or_default()
+        ),
         Some("needs_update") => {
             format!("needs an {CLI_NAME} update: {CLI_NAME} machine update {}", m["name"].as_str().unwrap_or("?"))
         }

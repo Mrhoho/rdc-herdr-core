@@ -225,6 +225,55 @@ seen from here (`rohan/t7`), in the same order and filters (`terminal`,
 changed meanwhile arrive as `created` again (replace the record) and those
 that went as `removed`; forgetting the machine removes its terminals.
 
+### Machines (`machine-events` fork feature)
+
+A subscription with no selection at all (no `terminal`, `children_of`,
+`labels` or `docs`) also hears of the machines this core added. Its reply and
+every `missed` it gets carry `machines`: each one's `MachineView`, as
+`machine.list` shows it. A change to a machine's view is a `machine` event:
+
+```
+{"jsonrpc":"2.0","method":"event","params":{"seq":44,"type":"machine","data":{"id":"…","name":"rohan","state":"connected","synced":true,…}}}
+{"jsonrpc":"2.0","method":"event","params":{"seq":51,"type":"machine","data":{"id":"…","name":"rohan","removed":true}}}
+```
+
+`data` is the whole view (replace it, by `id`), or `{id, name, removed:
+true}` once the machine is forgotten. It comes when the machine is added,
+renamed or removed, and when its `state`, `why`, `synced`, `version`,
+`build`, `features` or logout fields change; `since_ms` changing alone is no
+event (it only moves with the state). Nothing else is told: the 3-second
+status poll that refreshes the logout fields is silent while they stay the
+same. A machine's event comes before any event of its terminals that the
+same change causes: added before its terminals' `created`, renamed (same
+`id`, new `name`) before their `removed` under the old name and `created`
+under the new one, removed before their `removed`. Filtered subscriptions,
+cores that dialed in, and waits inside the core hear none of this, and a
+machine that is itself a hub does not pass its own machines on.
+
+`synced: true` means this core's terminals for that machine are exactly the
+ones there now. It is false while the line is down, held or connecting, after
+this core starts (it knows none of them until the line is up), and while a
+snapshot from there is being applied: each time the line comes up, and each
+time that core says this one missed events, `synced` turns false, the
+changes arrive as `created`/`removed`, then a `machine` event says `synced:
+true`. Until then a terminal missing here may still exist there. A refused
+subscription there (an error reply) changes nothing here: the line serves
+calls, the terminals stay as they were, `synced` stays false, and it asks
+again after 2, 4, 8, 16, then 30 s.
+
+States (`state`): `connecting`, `connected`, `needs_login` (a password or code
+only a person can give), `host_key_unknown` (ssh has no host key for it and
+nobody to accept one: `machine login` in a terminal shows it), `host_key_changed`
+(it differs from the one known; nothing here accepts it — check why, then fix
+known_hosts yourself), `needs_update`, `different_core` (another core answers
+there: its state was wiped or it was reinstalled; `why` names it), and
+`unreachable`; Nearshell builds add `machine_newer`, `build_conflict` and
+`incompatible`. The two host-key states are dialed again as slowly as
+`needs_login` (2, 5, then every 10 minutes) and at once by `machine.connect`;
+`different_core` as `unreachable`. `machine.add` fails with `needs_login`,
+`host_key_unknown` or `host_key_changed` for the same reasons. ssh's own
+words decide the host-key states; anything else it prints stays `unreachable`.
+
 `run --keep` or `terminal.keep {terminal, keep}` keeps a lost terminal live
 without a program until this machine's shell can start in its last observed
 folder (then its start folder, then home). The original command is never
@@ -294,7 +343,12 @@ terminals only, not documents, and changes while disconnected are not replayed.
 A remote stream's `missed`, and each successful establishment of its event
 subscription (including the first connection), are reported locally as `missed`
 to unfiltered and document subscribers, using the local sequence. Refetch documents on all
-watched machines after it.
+watched machines after it. Such a `missed` has `documents: true`: every
+terminal event before it was delivered (its snapshot is current, as in any
+`missed`), so a client may keep its terminal state and only refetch
+documents. Without the mark it is a real `missed`: events were dropped
+(this one too, if it did not fit in your queue) and the snapshot replaces
+what you had.
 
 ## Status
 

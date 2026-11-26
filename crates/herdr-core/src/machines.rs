@@ -16,11 +16,13 @@ mod deliver;
 pub(crate) mod nearshell;
 #[cfg(feature = "nearshell")]
 mod payload;
+mod refused;
 #[cfg(feature = "nearshell")]
 pub use deliver::deliver;
 pub use nearshell::Refusal;
 #[cfg(feature = "nearshell")]
 pub use payload::{Landed, describe, install_line, not_expected, parse_expect, summary};
+use refused::{host_key, host_key_refused, wants_login};
 
 #[derive(Serialize, Deserialize, JsonSchema, Clone)]
 pub struct Machine {
@@ -53,6 +55,9 @@ pub struct Machine {
     /// Remote account for loginctl enable-linger, when applicable.
     #[serde(default)]
     pub logout_linger_user: Option<String>,
+    /// What its core said it can do when last connected (its hello's `features`).
+    #[serde(default)]
+    pub features: Vec<String>,
 }
 
 impl Machine {
@@ -64,10 +69,16 @@ impl Machine {
     pub fn seen(&mut self, hello: &Value) -> bool {
         let build = serde_json::from_value(hello["build"].clone()).ok();
         let version = hello["version"].as_str().unwrap_or(&self.version).to_string();
-        let changed = (&version, &build) != (&self.version, &self.build);
-        (self.version, self.build) = (version, build);
+        let features = features(hello);
+        let changed = (&version, &build, &features) != (&self.version, &self.build, &self.features);
+        (self.version, self.build, self.features) = (version, build, features);
         changed
     }
+}
+
+/// What a core's `hello` says it can do.
+pub fn features(hello: &Value) -> Vec<String> {
+    hello["features"].as_array().into_iter().flatten().filter_map(|f| f.as_str().map(String::from)).collect()
 }
 
 /// How hc gets there: `ssh <target> <line>`, or `<target> <line>` (`via`).
@@ -315,14 +326,6 @@ fn unreachable(to: Reach, why: &str) -> RpcError {
     RpcError::new("unreachable", format!("cannot reach {target}: {why}"), hint)
 }
 
-/// ssh refused us a login only a person can give (code, password, key).
-fn wants_login(err: &str) -> bool {
-    // Too many keys offered (sshd's MaxAuthTries) fails auth the same way; retrying fast gets banned.
-    err.contains("Too many authentication failures")
-        || err.contains("Permission denied")
-            && ["publickey", "keyboard-interactive", "password"].iter().any(|k| err.contains(k))
-}
-
 /// An open pipe to the core there, past its hello.
 pub struct Dialed {
     pub child: tokio::process::Child,
@@ -427,6 +430,9 @@ async fn dial_once(
                     false => format!("in a terminal, `{}` offers to copy this {CLI_NAME} there", to.add()),
                 };
                 return Err(RpcError::new("hc_missing", format!("{CLI_NAME} is not installed on {target}"), hint));
+            }
+            if let Some(kind) = host_key(&err) {
+                return Err(host_key_refused(to, kind));
             }
             if wants_login(&err) {
                 if cfg!(windows) && !to.via {

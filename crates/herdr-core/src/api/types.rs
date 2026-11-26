@@ -502,6 +502,11 @@ pub struct SubscribeResult {
     /// Matching terminals here and on connected machines (`machine/t7`).
     #[schemars(with = "Vec<Public>")]
     pub terminals: Vec<serde_json::Value>,
+    /// Unfiltered subscriptions (no terminal, parent, label or document
+    /// selection): every machine this core added and its line, kept current by
+    /// `machine` events. Absent for the others, which hear no machine events.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub machines: Option<Vec<crate::remote::MachineView>>,
     /// Framed mode: the channel events arrive on (JSON lines, with credit).
     /// Plain mode: none; this connection now carries only notifications.
     pub channel: Option<u32>,

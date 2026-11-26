@@ -93,8 +93,9 @@ fn update(paths: &Paths, name: &str, m: &Value, call: Call) -> Result<Out, RpcEr
         if state == "connected" && view["build"] == build {
             break view;
         }
-        // Held again, or a login only a person can give: it will not come back by waiting.
-        if Refusal::named(state).is_some() || state == "needs_login" || std::time::Instant::now() > end {
+        // Held again, or what only a person can settle: it will not come back by waiting.
+        let person = ["needs_login", "host_key_unknown", "host_key_changed", "different_core"].contains(&state);
+        if Refusal::named(state).is_some() || person || std::time::Instant::now() > end {
             let why = view["why"].as_str().map(|w| format!(": {w}")).unwrap_or_default();
             return Err(unverified(name, &format!("is {state}{why}")));
         }
@@ -301,6 +302,34 @@ mod tests {
             let listed = machine(&paths, MachineCmd::Ls, |_, _| Ok(json!({"machines":[remote]}))).unwrap();
             assert_eq!(listed.human.contains("stops at logout"), state == false);
         }
+    }
+
+    #[test]
+    fn machine_ls_says_what_a_person_must_do_and_when_a_line_is_catching_up() {
+        let paths = Paths { socket: "u".into(), holder_socket: "u".into(), state: "u".into(), config: "u".into() };
+        let row = |m: Value| machine(&paths, MachineCmd::Ls, |_, _| Ok(json!({"machines":[m]}))).unwrap().human;
+        let m = |state: &str, synced: bool| {
+            let mut m = json!({"name":"box","target":"box","version":"0.1.22","state":state,"synced":synced});
+            if state != "connected" {
+                m["since_ms"] = crate::runtime::now_ms().into();
+                m["why"] = "a different core answers there (\"0f\")".into();
+            }
+            m
+        };
+        assert!(row(m("connected", true)).contains(" connected  \x1b[2m"), "{}", row(m("connected", true)));
+        assert!(row(m("connected", false)).contains("connected, catching up"));
+        assert!(
+            row(m("host_key_unknown", false))
+                .contains(&format!("host key unknown for 0s: {CLI_NAME} machine login box"))
+        );
+        assert!(row(m("host_key_changed", false)).contains("host key changed for 0s: not the one known here"));
+        let other = row(m("different_core", false));
+        assert!(
+            other.contains(&format!(
+                "another core answers for 0s (a different core answers there (\"0f\")): {CLI_NAME} machine rm box"
+            )),
+            "{other}"
+        );
     }
 
     #[test]

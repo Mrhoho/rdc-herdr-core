@@ -215,6 +215,10 @@ Unix stays an sh line. For WSL: `hc machine add --via 'wsl.exe -d Ubuntu -e sh -
 
 A machine whose SSH login fails shows `needs_login` and retries slowly (up to
 every 10 minutes); `hc machine login <name>` in a terminal reconnects now.
+`host_key_unknown` retries as slowly: `hc machine login <name>` in a terminal
+shows the key for a person to check and accept. `host_key_changed` is not
+yours to accept: tell the user. `different_core` means another core answers
+there now; its terminals here are gone (`hc machine rm`, then add it again).
 
 On Windows, `hc server status` never starts a core. If elevated SSH startup
 would block the same user's desktop session, open Herdr on that Windows

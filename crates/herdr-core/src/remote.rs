@@ -8,8 +8,6 @@ use crate::machines::Machine;
 use crate::rpc::RpcError;
 use crate::runtime::{Core, State, now_ms};
 use crate::wire::{self, Conn};
-use schemars::JsonSchema;
-use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::{self, Write};
@@ -25,11 +23,18 @@ type Sink = (Arc<Conn>, u32, relay::Shared);
 /// A pending reply, its stream sink and whether resize support is required.
 type Waiting = (oneshot::Sender<Value>, Option<(Sink, bool)>);
 
+mod mirror;
 mod put;
 mod relay;
 mod run;
+mod view;
 mod viewers;
+pub use mirror::rename_mirror;
+#[cfg(test)]
+use mirror::{mirror_event, mirror_replace};
+use mirror::{mirror_events, mirror_reply};
 use run::forward_once;
+pub use view::{MachineView, tell, view, views};
 use viewers::{RESIZE_LOST, lost_line, negotiate_resize, reattach, relay_out};
 pub use viewers::{Relayed, attach, conn_gone, relay_in};
 #[cfg(test)]
@@ -55,6 +60,8 @@ pub struct Line {
     mirror: Mutex<(u64, Option<u32>, Vec<u8>)>,
     /// What the core there said it can do (its `hello`).
     features: Vec<String>,
+    /// The mirror holds its terminals as they are there (`remote/mirror.rs`).
+    synced: AtomicBool,
     closed: AtomicBool,
     /// Puts in pieces take turns on it.
     bulk: put::Lane,
@@ -64,10 +71,10 @@ pub struct Line {
 
 impl Line {
     fn new(frames: mpsc::UnboundedSender<Vec<u8>>, hello: &Value) -> Arc<Line> {
-        let features = hello["features"].as_array().into_iter().flatten();
         Arc::new(Line {
-            features: features.filter_map(|f| f.as_str().map(String::from)).collect(),
+            features: crate::machines::features(hello),
             frames,
+            synced: AtomicBool::new(false),
             closed: AtomicBool::new(false),
             pending: Mutex::default(),
             streams: Mutex::default(),
@@ -215,9 +222,19 @@ pub enum LineState {
     NeedsLogin {
         since_ms: u64,
     },
+    /// ssh refused its host key: not known here, or not the one known here.
+    HostKey {
+        since_ms: u64,
+        changed: bool,
+    },
     /// Its hc speaks another protocol generation.
     NeedsUpdate {
         since_ms: u64,
+    },
+    /// Another core answers there (its state was wiped, or it was reinstalled).
+    DifferentCore {
+        since_ms: u64,
+        why: String,
     },
     Unreachable {
         since_ms: u64,
@@ -230,33 +247,6 @@ pub enum LineState {
         refusal: crate::machines::Refusal,
         why: String,
     },
-}
-
-/// A machine as `machine ls` and `ls` show it: its profile and its line now.
-#[derive(Serialize, JsonSchema, Clone)]
-pub struct MachineView {
-    #[serde(flatten)]
-    pub machine: Machine,
-    /// connecting, connected, needs_login, needs_update or unreachable; on
-    /// Nearshell builds also machine_newer, build_conflict and incompatible.
-    pub state: String,
-    /// Since when it is not connected (ms since the epoch).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub since_ms: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub why: Option<String>,
-}
-
-pub fn view(st: &State, m: &Machine) -> MachineView {
-    let (state, since_ms, why) = match st.lines.get(&m.id) {
-        None | Some(LineState::Connecting) => ("connecting", None, None),
-        Some(LineState::Connected(_)) => ("connected", None, None),
-        Some(LineState::NeedsLogin { since_ms }) => ("needs_login", Some(*since_ms), None),
-        Some(LineState::NeedsUpdate { since_ms }) => ("needs_update", Some(*since_ms), None),
-        Some(LineState::Unreachable { since_ms, why }) => ("unreachable", Some(*since_ms), Some(why.clone())),
-        Some(LineState::Held { since_ms, refusal, why }) => (refusal.state(), Some(*since_ms), Some(why.clone())),
-    };
-    MachineView { machine: m.clone(), state: state.into(), since_ms, why }
 }
 
 fn reconnect_max() -> Duration {
@@ -276,13 +266,16 @@ pub fn start_all(core: &Arc<Core>) {
 pub fn keep_up(core: &Arc<Core>, id: String) {
     let mut st = core.lock();
     st.lines.insert(id.clone(), LineState::Connecting);
+    tell(core, &mut st);
     let task = tokio::spawn(supervise(core.clone(), id.clone()));
     if let Some(old) = st.line_tasks.insert(id, task.abort_handle()) {
         old.abort();
     }
 }
 
+/// A machine removed from `st.machines`: subscribers hear it went, then its terminals.
 pub fn forget(core: &Core, st: &mut State, id: &str) {
+    tell(core, st);
     for (address, record) in st.mirrors.remove(id).unwrap_or_default() {
         core.deliver(st, "removed", &address, json!({}), &record, Some(&record));
     }
@@ -306,34 +299,13 @@ async fn supervise(core: Arc<Core>, id: String) {
     let mut login_backoff = Duration::ZERO;
     loop {
         let Some(m) = core.lock().machines.iter().find(|m| m.id == id).cloned() else { return };
-        let down = |st: &mut State, why: String, refusal: Option<crate::machines::Refusal>| {
-            let since_ms = match st.lines.get(&id) {
-                Some(
-                    LineState::Unreachable { since_ms, .. }
-                    | LineState::NeedsLogin { since_ms }
-                    | LineState::NeedsUpdate { since_ms }
-                    | LineState::Held { since_ms, .. },
-                ) => *since_ms,
-                _ => now_ms(),
-            };
-            let state = match (why.as_str(), refusal) {
-                (_, Some(refusal)) => LineState::Held { since_ms, refusal, why },
-                ("needs_login", _) => LineState::NeedsLogin { since_ms },
-                ("needs_update", _) => LineState::NeedsUpdate { since_ms },
-                _ => LineState::Unreachable { since_ms, why },
-            };
-            st.lines.insert(id.clone(), state);
-            core.changed.notify_waiters();
-        };
         let hello = json!({"framed": true, "core": core.info, "calls_you": m.name, "features": crate::api::FEATURES});
-        match crate::machines::dial(&core.paths, m.reach(), m.session.as_deref(), hello).await {
-            Ok(d) if d.hello["core"]["id"] != m.id.as_str() => {
-                down(&mut core.lock(), format!("a different core answers there ({})", d.hello["core"]["id"]), None);
-            }
-            Ok(d) => {
+        let dialed = crate::machines::dial(&core.paths, m.reach(), m.session.as_deref(), hello).await;
+        let e = match dialed {
+            Ok(d) if d.hello["core"]["id"] == m.id.as_str() => {
                 backoff = Duration::from_millis(250);
                 login_backoff = Duration::ZERO;
-                // It may have been updated since it was added.
+                // It may have been updated since it was added (subscribers hear it connected).
                 {
                     let mut st = core.lock();
                     if st.machines.iter_mut().find(|x| x.id == id).is_some_and(|saved| saved.seen(&d.hello)) {
@@ -343,27 +315,43 @@ async fn supervise(core: Arc<Core>, id: String) {
                 hold(&core, &m, d).await;
                 // Dial again at once: most drops are a restart there. Calls meanwhile
                 // wait for that dial instead of failing; only a failed one is "down".
-                core.lock().lines.insert(id.clone(), LineState::Connecting);
+                let mut st = core.lock();
+                st.lines.insert(id.clone(), LineState::Connecting);
                 core.changed.notify_waiters();
+                tell(&core, &mut st);
                 continue;
             }
-            Err(e) if let Some(refusal) = crate::machines::Refusal::of(&e) => {
-                return down(&mut core.lock(), e.message, Some(refusal));
-            }
-            Err(e) if e.kind == "needs_login" => {
-                down(&mut core.lock(), "needs_login".into(), None);
-                // Slow enough that a failing key doesn't get the person banned (fail2ban, CrowdSec),
-                // but an ssh-agent unlocked later still reconnects on its own.
-                login_backoff = Duration::from_secs(match login_backoff.as_secs() {
-                    0 => 120,
-                    120 => 300,
-                    _ => 600,
-                });
-                tokio::time::sleep(login_backoff).await;
-                continue;
-            }
-            Err(e) if e.kind == "incompatible" => down(&mut core.lock(), "needs_update".into(), None),
-            Err(e) => down(&mut core.lock(), e.message, None),
+            Ok(d) => RpcError::new(
+                "different_core",
+                format!("a different core answers there ({})", d.hello["core"]["id"]),
+                "",
+            ),
+            Err(e) => e,
+        };
+        let held = {
+            let mut st = core.lock();
+            let down = LineState::after(&e, st.lines.get(&id).and_then(LineState::since_ms).unwrap_or_else(now_ms));
+            let held = matches!(down, LineState::Held { .. });
+            st.lines.insert(id.clone(), down);
+            core.changed.notify_waiters();
+            tell(&core, &mut st);
+            held
+        };
+        // Held: dialed again only by machine.connect (or a core start).
+        if held {
+            return;
+        }
+        // A login or a host key only a person can settle. Slow enough that a failing key
+        // doesn't get the person banned (fail2ban, CrowdSec), but an ssh-agent unlocked
+        // later still reconnects on its own.
+        if matches!(e.kind.as_str(), "needs_login" | "host_key_unknown" | "host_key_changed") {
+            login_backoff = Duration::from_secs(match login_backoff.as_secs() {
+                0 => 120,
+                120 => 300,
+                _ => 600,
+            });
+            tokio::time::sleep(login_backoff).await;
+            continue;
         }
         tokio::time::sleep(backoff).await;
         backoff = (backoff * 2).min(reconnect_max());
@@ -377,6 +365,7 @@ async fn refresh_status(core: &Arc<Core>, m: &Machine, line: &Arc<Line>) {
             let Some(saved) = st.machines.iter_mut().find(|saved| saved.id == m.id) else { return };
             saved.keeps_running_after_logout = status["keeps_running_after_logout"].as_bool();
             saved.logout_linger_user = status["logout_linger_user"].as_str().map(String::from);
+            tell(core, &mut st);
         }
         tokio::time::sleep(Duration::from_secs(3)).await;
     }
@@ -392,15 +381,15 @@ async fn hold(core: &Arc<Core>, m: &Machine, mut d: crate::machines::Dialed) {
         for message in st.machine_outbox.remove(&m.id).unwrap_or_default() {
             line.message(&message);
         }
+        tell(core, &mut st);
     }
     core.changed.notify_waiters();
     tokio::spawn(reattach(core.clone(), m.clone(), line.clone()));
     let refresh = refresh_status(core, m, &line);
     tokio::pin!(refresh);
     // Everything that happens there, to keep its mirror here and tell subscribers.
-    let id = line.next.fetch_add(1, Ordering::Relaxed);
-    lock(&line.mirror).0 = id;
-    line.message(&json!({"jsonrpc": "2.0", "id": id, "method": "events.subscribe", "params": {}}));
+    mirror::subscribe(&line);
+    let mut refused = 0;
     let mut stdin = d.stdin;
     let writer = tokio::spawn(async move {
         while let Some(frame) = out.recv().await {
@@ -437,12 +426,20 @@ async fn hold(core: &Arc<Core>, m: &Machine, mut d: crate::machines::Dialed) {
                 let Ok(message) = serde_json::from_slice::<Value>(&payload) else { continue };
                 let mirror_call = lock(&line.mirror).0;
                 match message["method"].as_str() {
+                    // Refused (the core there may be closing): the line serves calls
+                    // meanwhile, its mirror as it was and not synced; asked again soon.
                     None if message["id"] == mirror_call => {
-                        lock(&line.mirror).1 = message["result"]["channel"].as_u64().map(|c| c as u32);
-                        mirror_replace(core, m, message["result"]["terminals"].as_array().cloned().unwrap_or_default());
-                        if message["result"]["channel"].is_u64() {
-                            // Docs are not in terminal snapshots: readers must refetch after a gap.
-                            core.documents_missed(&mut core.lock());
+                        if mirror_reply(core, m, &line, &message) {
+                            refused = 0;
+                        } else {
+                            refused = (refused + 1).min(5);
+                            let (line, pause) = (line.clone(), Duration::from_secs(1 << refused).min(reconnect_max()));
+                            tokio::spawn(async move {
+                                tokio::time::sleep(pause).await;
+                                if !line.closed.load(Ordering::Relaxed) {
+                                    mirror::subscribe(&line);
+                                }
+                            });
                         }
                     }
                     None => line.take_reply(message),
@@ -472,6 +469,7 @@ async fn hold(core: &Arc<Core>, m: &Machine, mut d: crate::machines::Dialed) {
         let mut st = core.lock();
         if matches!(st.lines.get(&m.id), Some(LineState::Connected(l)) if Arc::ptr_eq(l, &line)) {
             st.lines.insert(m.id.clone(), LineState::Connecting);
+            tell(core, &mut st);
         }
     }
     // Calls still waiting on it fail now ("lost the line"), not at their deadline.
@@ -480,126 +478,6 @@ async fn hold(core: &Arc<Core>, m: &Machine, mut d: crate::machines::Dialed) {
     // Killed, not waited for: a Mac core once never heard the old ssh had
     // died and stayed "connecting" for good. It is reaped in the background.
     let _ = d.child.start_kill();
-}
-
-/// A machine's terminals now (after a connect, or after it says we missed
-/// some): subscribers here hear what appeared, changed or went.
-fn mirror_replace(core: &Core, m: &Machine, terminals: Vec<Value>) {
-    let mut st = core.lock();
-    let Some(name) = st.machines.iter().find(|current| current.id == m.id).map(|m| m.name.clone()) else { return };
-    let fresh: std::collections::BTreeMap<String, Value> = terminals
-        .into_iter()
-        .map(|t| localize_in(core, &st, &name, &[], t))
-        .map(|t| (t["address"].as_str().unwrap_or_default().to_string(), t))
-        .collect();
-    let old = st.mirrors.remove(&m.id).unwrap_or_default();
-    for (address, record) in old.iter().filter(|(a, _)| !fresh.contains_key(*a)) {
-        core.deliver(&mut st, "removed", address, json!({}), record, Some(record));
-    }
-    for (address, record) in fresh.iter().filter(|(a, r)| old.get(*a) != Some(*r)) {
-        core.deliver(&mut st, "created", address, record.clone(), record, None);
-    }
-    st.mirrors.insert(m.id.clone(), fresh);
-}
-
-pub fn rename_mirror(core: &Core, st: &mut State, id: &str, old: &str, new: &str) {
-    let Some(records) = st.mirrors.remove(id) else { return };
-    let mut renamed = std::collections::BTreeMap::new();
-    for record in records.values() {
-        let mut record = record.clone();
-        map_addresses(&mut record, &|s| match s.split_once('/') {
-            Some((prefix, rest)) if prefix == old => format!("{new}/{rest}"),
-            _ => s.to_owned(),
-        });
-        let address = record["address"].as_str().unwrap_or_default().to_owned();
-        renamed.insert(address, record);
-    }
-    st.mirrors.insert(id.to_owned(), renamed.clone());
-    for (address, record) in records {
-        core.deliver(st, "removed", &address, json!({}), &record, Some(&record));
-    }
-    for (address, record) in renamed {
-        core.deliver(st, "created", &address, record.clone(), &record, None);
-    }
-}
-
-/// Event lines from a machine: applied to its mirror, passed on as seen from here.
-fn mirror_events(core: &Core, m: &Machine, line: &Line, payload: &[u8]) {
-    let lines: Vec<Vec<u8>> = {
-        let mut mirror = lock(&line.mirror);
-        mirror.2.extend_from_slice(payload);
-        let whole = mirror.2.iter().rposition(|b| *b == b'\n').map_or(0, |at| at + 1);
-        let done: Vec<u8> = mirror.2.drain(..whole).collect();
-        done.split(|b| *b == b'\n').filter(|l| !l.is_empty()).map(<[u8]>::to_vec).collect()
-    };
-    for l in lines {
-        let Ok(msg) = serde_json::from_slice::<Value>(&l) else { continue };
-        match msg["method"].as_str() {
-            Some("event") => mirror_event(core, m, msg["params"].clone()),
-            Some("missed") => {
-                mirror_replace(core, m, msg["params"]["terminals"].as_array().cloned().unwrap_or_default());
-                core.documents_missed(&mut core.lock());
-            }
-            _ => {}
-        }
-    }
-}
-
-fn mirror_event(core: &Core, m: &Machine, p: Value) {
-    let mut st = core.lock();
-    let Some(name) = st.machines.iter().find(|current| current.id == m.id).map(|m| m.name.clone()) else { return };
-    let p = localize_in(core, &st, &name, &[], p);
-    let (kind, address, data) =
-        (p["type"].as_str().unwrap_or_default(), p["terminal"].as_str().unwrap_or_default(), p["data"].clone());
-    if kind == "doc" {
-        // Only this machine, not docs it in turn watches on a third core.
-        if p.get("machine").is_none() {
-            let doc = data["name"].as_str().unwrap_or_default().to_string();
-            core.doc_event(&mut st, &doc, data, Some(&name));
-        }
-        return;
-    }
-    let mirror = st.mirrors.entry(m.id.clone()).or_default();
-    let (record, was) = match kind {
-        "created" | "restarted" => {
-            mirror.insert(address.into(), data.clone());
-            (data.clone(), None)
-        }
-        "removed" => match mirror.remove(address) {
-            Some(record) => (record.clone(), Some(record)),
-            None => return,
-        },
-        _ => {
-            let Some(record) = mirror.get_mut(address) else { return };
-            let was = record.clone();
-            apply(record, kind, &data);
-            (record.clone(), Some(was))
-        }
-    };
-    core.deliver(&mut st, kind, address, data, &record, was.as_ref());
-}
-
-/// An event's change, applied to a terminal record (see schema/README.md).
-fn apply(record: &mut Value, kind: &str, data: &Value) {
-    let set = |record: &mut Value, keys: &[&str]| keys.iter().for_each(|k| record[*k] = data[*k].clone());
-    match kind {
-        "finished" | "lost" => {
-            record["state"] = if kind == "lost" { "live" } else { "finished" }.into();
-            if kind == "lost" {
-                record["pid"] = Value::Null;
-            }
-            set(record, &["reason", "exit_code", "signal", "finished_ms"]);
-            record.as_object_mut().map(|r| r.remove("foreground"));
-        }
-        "status" => set(record, &["status", "records", "reported"]),
-        "turn" => set(record, &["turn"]),
-        "title" => set(record, &["title"]),
-        "labels" => set(record, &["labels"]),
-        "keep" => set(record, &["keep"]),
-        "size" => set(record, &["cols", "rows"]),
-        "foreground" => record["foreground"] = data.clone(),
-        _ => {}
-    }
 }
 
 /// What a machine may ask of terminals here that are parents of its own.
@@ -907,27 +785,8 @@ async fn line(core: &Core, m: &Machine) -> Result<Arc<Line>, RpcError> {
     let st = core.lock();
     match st.lines.get(&m.id) {
         Some(LineState::Connected(line)) => Ok(line.clone()),
-        Some(LineState::NeedsLogin { .. }) => Err(RpcError::new(
-            "unavailable",
-            format!("{} needs a login typed by a person", m.name),
-            if cfg!(windows) {
-                format!("set up its SSH keys, then: {CLI_NAME} machine login {}", m.name)
-            } else {
-                format!("in a terminal: {CLI_NAME} machine login {}", m.name)
-            },
-        )),
-        Some(LineState::NeedsUpdate { .. }) => Err(RpcError::new(
-            "needs_update",
-            format!("{}'s {CLI_NAME} speaks another protocol generation", m.name),
-            format!("{CLI_NAME} machine update {}", m.name),
-        )),
-        Some(LineState::Unreachable { why, .. }) => Err(RpcError::new(
-            "unavailable",
-            format!("{} is unreachable: {why}", m.name),
-            format!("{CLI_NAME} machine ls shows when it comes back"),
-        )),
-        Some(LineState::Held { refusal, why, .. }) => Err(refusal.unavailable(&m.name, why)),
-        _ => Err(RpcError::new("unavailable", format!("still connecting to {}", m.name), "try again in a moment")),
+        Some(down) => Err(down.refusal(&m.name)),
+        None => Err(LineState::Connecting.refusal(&m.name)),
     }
 }
 

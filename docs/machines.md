@@ -165,5 +165,11 @@ which holds up everything else on its connection and gives up after `machine_tim
 Once a machine is added, core retries a lost connection. If SSH authentication fails,
 it shows `needs_login` and retries after 2 minutes, then 5 minutes, then every 10 minutes.
 Run `hc machine login box` in a terminal to log in and reconnect immediately.
+When ssh has no host key for it, it shows `host_key_unknown` with the same delays;
+`hc machine login box` in a terminal shows the key to check and accept. When the key
+differs from the one known, it shows `host_key_changed` with the same delays: find out
+why, then fix `known_hosts` yourself, nothing here accepts it. When another core
+answers there (its state was wiped, or it was set up again), it shows `different_core`
+and retries like an unreachable machine; remove it and add it again.
 A successful connection resets these delays. Reattach after it returns.
 To forget the connection here, use `hc machine rm box`. That does not stop its remote terminals.

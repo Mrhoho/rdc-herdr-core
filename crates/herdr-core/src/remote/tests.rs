@@ -3,6 +3,7 @@ use crate::events::{Filter, Sink};
 use crate::paths::Paths;
 use std::sync::atomic::AtomicBool;
 
+mod machines;
 mod marks;
 
 #[tokio::test]
@@ -139,6 +140,7 @@ async fn automatic_input_survives_relays_but_not_a_capability_downgrade() {
             build: None,
             keeps_running_after_logout: None,
             logout_linger_user: None,
+            features: Vec::new(),
         };
         let conn = Arc::new(Conn::default());
         conn.with(|out| out.open(7));
@@ -326,6 +328,7 @@ async fn failed_reattach_drains_pending_data_before_close() {
         build: None,
         keeps_running_after_logout: None,
         logout_linger_user: None,
+        features: Vec::new(),
     };
     let conn = Arc::new(Conn::default());
     conn.with(|out| {
@@ -402,13 +405,15 @@ fn remote_misses_and_renames_keep_subscribers_on_the_current_machine() {
         build: None,
         keeps_running_after_logout: None,
         logout_linger_user: None,
+        features: Vec::new(),
     };
     let (tx, mut rx) = mpsc::channel(4);
     let (filtered_tx, mut filtered_rx) = mpsc::channel(4);
     {
         let mut st = core.lock();
-        st.events.seq = 7;
         st.machines.push(machine.clone());
+        tell(&core, &mut st); // as when it was added
+        st.events.seq = 7;
         core.subscribe(&mut st, Filter::default(), Sink::Plain { tx, behind: Arc::new(AtomicBool::new(false)) });
         core.subscribe(
             &mut st,
@@ -422,8 +427,9 @@ fn remote_misses_and_renames_keep_subscribers_on_the_current_machine() {
     let msg: Value = serde_json::from_str(&rx.try_recv().expect("local missed notification")).unwrap();
     assert_eq!(msg["method"], "missed");
     assert_eq!(msg["params"]["seq"], 7);
+    assert_eq!(msg["params"]["documents"], true, "no terminal event was lost: {msg}");
     assert!(filtered_rx.try_recv().is_err());
-    mirror_replace(&core, &machine, vec![json!({"address":"t1", "state":"live", "status":{"state":"working"}})]);
+    mirror_replace(&core, &machine, &line, vec![json!({"address":"t1", "state":"live", "status":{"state":"working"}})]);
     rx.try_recv().unwrap();
     let conn = Arc::new(Conn::default());
     conn.with(|out| {
@@ -452,6 +458,13 @@ fn remote_misses_and_renames_keep_subscribers_on_the_current_machine() {
         .find(|line| line["method"] == "missed")
         .expect("backpressure snapshot");
     assert_eq!(missed["params"]["terminals"][0]["address"], "renamed/t1");
+    assert!(missed["params"].get("machines").is_none(), "a filtered subscriber hears of no machines");
+    let renamed: Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+    assert_eq!(renamed["params"]["type"], "machine", "the machine first: {renamed}");
+    assert_eq!(
+        (&renamed["params"]["data"]["id"], &renamed["params"]["data"]["name"]),
+        (&json!("remote"), &json!("renamed"))
+    );
     let removed: Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
     let created: Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
     assert_eq!(removed["params"]["terminal"], "rohan/t1");
@@ -501,6 +514,7 @@ async fn late_remote_attach_and_reattach_close_the_remote_stream() {
             build: None,
             keeps_running_after_logout: None,
             logout_linger_user: None,
+            features: Vec::new(),
         };
         let conn = Arc::new(Conn::default());
         let (frames, mut rx) = mpsc::unbounded_channel();

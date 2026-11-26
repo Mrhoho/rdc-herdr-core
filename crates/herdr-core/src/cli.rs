@@ -760,7 +760,7 @@ fn follow_events(paths: &Paths, params: Value, json: bool) -> Result<(), RpcErro
     if json {
         println!("{snapshot}");
     } else {
-        println!("{}", table(&json!({"terminals": snapshot["terminals"]})));
+        println!("{}", table(&json!({"terminals": snapshot["terminals"], "machines": snapshot["machines"]})));
     }
     for line in std::io::BufReader::new(&stream).lines() {
         let Ok(line) = line else { break };
@@ -776,12 +776,17 @@ fn follow_events(paths: &Paths, params: Value, json: bool) -> Result<(), RpcErro
                 let machine = p["machine"].as_str().map(|m| format!("{m}/")).unwrap_or_default();
                 println!("{machine}{name}  doc  version {}", p["data"]["version"]);
             }
+            Some("event") if p["type"] == "machine" => {
+                let state = if p["data"]["removed"] == true { "removed".into() } else { line_state(&p["data"]) };
+                println!("{:<6} {:<10} {state}", p["data"]["name"].as_str().unwrap_or("?"), "machine");
+            }
             Some("event") => println!(
                 "{:<6} {:<10} {}",
                 p["terminal"].as_str().unwrap_or("?"),
                 p["type"].as_str().unwrap_or("?"),
                 p["data"]
             ),
+            Some("missed") if p["documents"] == true => println!("[documents may have changed: read them again]"),
             Some("missed") => {
                 println!("[missed some events; {} terminals now]", p["terminals"].as_array().map_or(0, Vec::len))
             }

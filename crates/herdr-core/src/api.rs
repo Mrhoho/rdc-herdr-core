@@ -30,6 +30,7 @@ pub const FEATURES: &[&str] = &[
     "connection-lifecycle",
     "paint-marks",
     "display-palette",
+    "machine-events",
 ];
 pub const FINISHED_LINES: usize = 1000;
 /// Terminal identity variables replaced by the core's defaults unless explicitly overridden.
@@ -170,11 +171,11 @@ methods! { Ctx<'_>;
         "Write an opaque JSON document (at most 1 MiB) if its version still matches. Null deletes the value but retains its version. Persists atomically and emits a doc event.",
         errors ["invalid_params", "conflict", "internal", "machine_unknown", "unavailable", "needs_update"];
     "events.subscribe" => events_subscribe, SubscribeParams => SubscribeResult,
-        "Snapshot of matching terminals, then every matching fact change in order (created, lost, restarted, keep, finished, removed, status, turn, title, labels, size, doc) as `event` notifications, `heartbeat` every 15 s, and `missed` + fresh snapshot for a subscriber that fell behind. Document-only subscriptions receive empty terminal snapshots.",
+        "Snapshot of matching terminals, then every matching fact change in order (created, lost, restarted, keep, finished, removed, status, turn, title, labels, size, doc) as `event` notifications, `heartbeat` every 15 s, and `missed` + fresh snapshot for a subscriber that fell behind (`documents: true` when only documents may have changed). Unfiltered subscriptions also get every added machine in snapshots and its changes as `machine` events. Document-only subscriptions receive empty terminal snapshots.",
         errors ["not_found", "machine_unknown", "connection_closed"];
     "machine.add" => machine_add, MachineAddParams => crate::machines::Machine,
         "Add another machine: dial it over ssh, check that hc answers there, and keep it under a name.",
-        errors ["invalid_params", "name_taken", "already_added", "unreachable", "hc_missing", "incompatible", "needs_update", "machine_newer", "build_conflict", "unsupported_platform"];
+        errors ["invalid_params", "name_taken", "already_added", "unreachable", "needs_login", "host_key_unknown", "host_key_changed", "hc_missing", "incompatible", "needs_update", "machine_newer", "build_conflict", "unsupported_platform"];
     "machine.list" => machine_list, Empty => MachineListResult,
         "The machines this core has added.",
         errors [];
@@ -654,20 +655,20 @@ async fn events_subscribe(core: Ctx<'_>, p: SubscribeParams) -> Result<Subscribe
         }
         (None, None) => return Err(RpcError::internal("no connection to deliver events on")),
     };
-    let (seq, terminals) = {
+    let (seq, terminals, machines) = {
         let mut st = core.lock();
         if let Sink::Framed { conn, channel } = &sink {
             conn.admit(&st)?;
             conn.with(|out| out.open(*channel));
         }
-        let terminals = core.matching(&st, &filter);
+        let (terminals, machines) = (core.matching(&st, &filter), core.machines(&st, &filter));
         core.subscribe(&mut st, filter, sink);
-        (st.events.seq, terminals)
+        (st.events.seq, terminals, machines)
     };
     if let Some(channel) = channel {
         crate::server::heartbeat(core.core.clone(), core.conn.expect("framed").clone(), channel);
     }
-    Ok(SubscribeResult { seq, terminals, channel })
+    Ok(SubscribeResult { seq, terminals, machines, channel })
 }
 
 /// A machine name that is free: valid, not another machine's, not this core's own.
@@ -722,6 +723,7 @@ async fn machine_add(core: Ctx<'_>, p: MachineAddParams) -> Result<crate::machin
         build: serde_json::from_value(hello["build"].clone()).ok(),
         keeps_running_after_logout: hello["keeps_running_after_logout"].as_bool(),
         logout_linger_user: hello["logout_linger_user"].as_str().map(String::from),
+        features: crate::machines::features(&hello),
     };
     if machine.id == core.info.id {
         return Err(RpcError::invalid_params(format!("{} is this core", machine.target))

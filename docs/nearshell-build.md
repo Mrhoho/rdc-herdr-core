@@ -135,7 +135,7 @@ sh -c 'p="$HOME/.local/share/nearshell/<bundle-id>/bin/nhc"; [ -x "$p" ] || { ec
 
 ### 机器状态
 
-`machine.list`、`ls` 的 `state` 在上游的 `connecting`、`connected`、`needs_login`、`needs_update`、`unreachable` 之外，Nearshell 构建还会出现 `machine_newer`、`build_conflict`、`incompatible`；`needs_update` 在 Nearshell 构建里表示对端序号更小。处于这四个状态的机器带 `since_ms` 与 `why`（拒绝原因，含两边的序号或身份），不按退避重拨：只有 `machine.connect`（`nhc machine login` 也会调用它）或 hub core 启动时会再拨一次。路由到这台机器的调用在 `needs_update` 时返回 `needs_update`，其余三个状态返回 `unavailable`。默认构建里协议代际不符仍记为 `needs_update` 并按退避重拨。
+`machine.list`、`ls` 的 `state` 在上游各状态（含 host key 与 `different_core`，见 schema/README.md）之外，Nearshell 构建还会出现 `machine_newer`、`build_conflict`、`incompatible`；`needs_update` 在 Nearshell 构建里表示对端序号更小。处于这四个状态的机器带 `since_ms` 与 `why`（拒绝原因，含两边的序号或身份），不按退避重拨：只有 `machine.connect`（`nhc machine login` 也会调用它）或 hub core 启动时会再拨一次。路由到这台机器的调用在 `needs_update` 时返回 `needs_update`，其余三个状态返回 `unavailable`。默认构建里协议代际不符仍记为 `needs_update` 并按退避重拨。
 
 机器记录新增 `build`：最近一次连上时对端的构建身份，与 `version` 一起在每次连上时刷新；没有这个字段的旧记录照常读取（为 null）。`machine ls --json` 带出它；`nhc machine ls` 的人读输出在版本后显示 `build <releaseSeq> <commit 前 12 位> <patchset>`，没有记录时显示 `build unknown`。
 

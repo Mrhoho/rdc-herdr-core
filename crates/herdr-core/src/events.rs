@@ -17,6 +17,8 @@ pub const PLAIN_QUEUE: usize = 1024;
 pub struct Events {
     pub seq: u64,
     pub(crate) subs: Vec<Sub>,
+    /// What unfiltered subscribers last heard of each machine, by id (`remote::tell`).
+    pub(crate) machines: BTreeMap<String, Value>,
 }
 
 #[derive(Clone, Default)]
@@ -66,6 +68,12 @@ impl Filter {
         !self.docs.is_empty() || self.all_terminals()
     }
 
+    /// Whether it hears of the machines this core added: it asked for every
+    /// terminal and is no core that dialed in (whose own machines are its own).
+    fn hears_machines(&self) -> bool {
+        self.docs.is_empty() && self.all_terminals() && !self.here_only
+    }
+
     /// Whether it wants terminal facts at all. Naming anything narrows, as it does
     /// in every other dimension of this filter, so naming documents and no terminal
     /// asks for documents alone; naming both asks for both.
@@ -85,6 +93,8 @@ pub(crate) enum Target<'a> {
     Doc {
         name: &'a str,
     },
+    /// A machine's view changed: for subscribers that hear of machines.
+    Machine,
 }
 
 fn record(t: &Terminal) -> Value {
@@ -124,9 +134,19 @@ impl Core {
         here.chain(afar).filter(|r| filter.matches(r)).collect()
     }
 
-    /// Every terminal the filter matches, with the sequence it is current at.
+    /// Every terminal the filter matches, with the sequence it is current at;
+    /// every machine too, for a subscriber that hears of them.
     pub fn snapshot(&self, st: &State, filter: &Filter) -> Value {
-        json!({"seq": st.events.seq, "terminals": self.matching(st, filter)})
+        let mut snapshot = json!({"seq": st.events.seq, "terminals": self.matching(st, filter)});
+        if let Some(machines) = self.machines(st, filter) {
+            snapshot["machines"] = json!(machines);
+        }
+        snapshot
+    }
+
+    /// Every machine and its line, when the filter hears of machines.
+    pub fn machines(&self, st: &State, filter: &Filter) -> Option<Vec<crate::remote::MachineView>> {
+        filter.hears_machines().then(|| crate::remote::views(st))
     }
 
     pub fn subscribe(&self, st: &mut State, filter: Filter, sink: Sink) {
@@ -174,6 +194,12 @@ impl Core {
         self.deliver_event(st, params, Target::Terminal { record, was });
     }
 
+    /// A machine was added, changed or removed (`data`: its view, or `{id,
+    /// name, removed}`): to the subscribers that hear of machines.
+    pub fn machine_event(&self, st: &mut State, data: Value) {
+        self.deliver_event(st, json!({"type": "machine", "data": data}), Target::Machine);
+    }
+
     /// Documents concern the subscribers that named them, every subscriber while
     /// nobody names any, and never a terminal selection on its own.
     pub fn doc_event(&self, st: &mut State, name: &str, data: Value, machine: Option<&str>) {
@@ -205,6 +231,7 @@ impl Core {
                     (was.is_some() && sub.filter.wants_terminals() && sub.filter.matches(record)).then_some(record),
                 ),
                 Target::Doc { name } => (sub.filter.wants_doc(name), false, None),
+                Target::Machine => (sub.filter.hears_machines() && !matches!(sub.sink, Sink::Waiter(_)), false, None),
             };
             if !now && !before {
                 return true;
@@ -242,19 +269,25 @@ impl Core {
     }
 
     /// A machine lost changes: document readers must refetch, with our sequence,
-    /// not the remote stream's. Terminal mirrors have already been refreshed.
+    /// not the remote stream's. Terminal mirrors have already been refreshed and
+    /// their changes delivered, so nothing about terminals was lost: the snapshot
+    /// is marked `documents`. Unless this one would overflow the queue, which
+    /// drops the queued events: then it is a plain `missed`.
     pub fn documents_missed(&self, st: &mut State) {
         let mut subs = std::mem::take(&mut st.events.subs);
         subs.retain(|sub| {
             if !sub.filter.wants_documents() || sub.filter.here_only {
                 return true;
             }
-            let line = notification("missed", self.snapshot(st, &sub.filter));
+            let snapshot = self.snapshot(st, &sub.filter);
+            let mut marked = snapshot.clone();
+            marked["documents"] = true.into();
+            let line = notification("missed", marked);
             match &sub.sink {
                 Sink::Framed { conn, channel } => {
                     conn.with(|out| {
                         if !out.data_lines(*channel, line.as_bytes()) {
-                            out.data(*channel, line.as_bytes());
+                            out.data(*channel, notification("missed", snapshot).as_bytes());
                         }
                     });
                     true

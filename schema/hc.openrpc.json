@@ -587,6 +587,14 @@
             "default": null,
             "description": "Its build identity when last connected (null: none sent, or an old record)."
           },
+          "features": {
+            "default": [],
+            "description": "What its core said it can do when last connected (its hello's `features`).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "host": {
             "description": "What that core calls itself (its hostname).",
             "type": "string"
@@ -679,6 +687,14 @@
             "default": null,
             "description": "Its build identity when last connected (null: none sent, or an old record)."
           },
+          "features": {
+            "default": [],
+            "description": "What its core said it can do when last connected (its hello's `features`).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "host": {
             "description": "What that core calls itself (its hostname).",
             "type": "string"
@@ -724,8 +740,12 @@
             ]
           },
           "state": {
-            "description": "connecting, connected, needs_login, needs_update or unreachable; on\nNearshell builds also machine_newer, build_conflict and incompatible.",
+            "description": "connecting, connected, needs_login, host_key_unknown, host_key_changed,\nneeds_update, different_core or unreachable; on Nearshell builds also\nmachine_newer, build_conflict and incompatible.",
             "type": "string"
+          },
+          "synced": {
+            "description": "Its terminals here are exactly the ones there now: connected, and every\nchange from the last snapshot taken over this line delivered.",
+            "type": "boolean"
           },
           "target": {
             "description": "How it is reached: an ssh target, or (`via`) a command.",
@@ -758,7 +778,8 @@
           "id",
           "host",
           "version",
-          "state"
+          "state",
+          "synced"
         ],
         "type": "object"
       },
@@ -1321,6 +1342,16 @@
             "minimum": 0,
             "type": [
               "integer",
+              "null"
+            ]
+          },
+          "machines": {
+            "description": "Unfiltered subscriptions (no terminal, parent, label or document\nselection): every machine this core added and its line, kept current by\n`machine` events. Absent for the others, which hear no machine events.",
+            "items": {
+              "$ref": "#/components/schemas/MachineView"
+            },
+            "type": [
+              "array",
               "null"
             ]
           },
@@ -4171,7 +4202,7 @@
       }
     },
     {
-      "description": "Snapshot of matching terminals, then every matching fact change in order (created, lost, restarted, keep, finished, removed, status, turn, title, labels, size, doc) as `event` notifications, `heartbeat` every 15 s, and `missed` + fresh snapshot for a subscriber that fell behind. Document-only subscriptions receive empty terminal snapshots.",
+      "description": "Snapshot of matching terminals, then every matching fact change in order (created, lost, restarted, keep, finished, removed, status, turn, title, labels, size, doc) as `event` notifications, `heartbeat` every 15 s, and `missed` + fresh snapshot for a subscriber that fell behind (`documents: true` when only documents may have changed). Unfiltered subscriptions also get every added machine in snapshots and its changes as `machine` events. Document-only subscriptions receive empty terminal snapshots.",
       "errors": [
         {
           "code": -32000,
@@ -4286,6 +4317,27 @@
             "kind": "unreachable"
           },
           "message": "unreachable"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "needs_login"
+          },
+          "message": "needs_login"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "host_key_unknown"
+          },
+          "message": "host_key_unknown"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "host_key_changed"
+          },
+          "message": "host_key_changed"
         },
         {
           "code": -32000,
