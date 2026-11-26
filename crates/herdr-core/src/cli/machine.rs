@@ -1,25 +1,57 @@
 //! `hc machine …`: adding, listing, logging in to, updating other machines.
+//! In a terminal, adding, logging in and updating are a person's flow (see
+//! `flow`); piped or with --json they print what they always printed.
 
 use super::*;
 use crate::api::{MachineAddParams, MachineParams, MachineRenameParams};
 use crate::branding::COMMAND as CLI_NAME;
 use crate::machines::Reach;
 
+mod flow;
+pub(super) use flow::hold;
+use flow::{Progress, listed, not_reached, reached};
+
 #[derive(Subcommand)]
 pub(super) enum MachineCmd {
-    /// Add a machine you reach with ssh: hc machine add vps.
+    /// Add a machine you reach with ssh: hc machine add vps. In a terminal,
+    /// without a target, it asks for one and for a name.
     Add(MachineAddParams),
     /// List the machines added here.
     Ls,
     /// Log in again (a password or code) after the machine says it needs one.
     /// On Windows: reconnect once its SSH keys work.
-    Login(MachineParams),
+    Login {
+        #[command(flatten)]
+        p: MachineParams,
+        /// After the outcome, wait for Enter before exiting (same exit status).
+        /// Only in a terminal: without one it exits at once.
+        #[arg(long)]
+        hold: bool,
+    },
     /// Copy this hc there and restart hc there (its terminals keep running).
-    Update(MachineParams),
+    Update {
+        #[command(flatten)]
+        p: MachineParams,
+        /// After the outcome, wait for Enter before exiting (same exit status).
+        /// Only in a terminal: without one it exits at once.
+        #[arg(long)]
+        hold: bool,
+    },
     /// Give a machine a new name here.
     Rename(MachineRenameParams),
     /// Forget a machine (its terminals keep running there).
     Rm(MachineParams),
+}
+
+impl MachineCmd {
+    /// `--hold`: its outcome stays up until Enter.
+    pub(super) fn holds(&self) -> bool {
+        match self {
+            MachineCmd::Add(p) => p.hold,
+            MachineCmd::Login { hold, .. } | MachineCmd::Update { hold, .. } => *hold,
+            _ => false,
+        }
+    }
 }
 
 fn linger_user(m: &Value) -> String {
@@ -45,32 +77,184 @@ fn logout_warning(m: &Value) -> String {
 
 type Call<'a> = &'a dyn Fn(&str, Value) -> Result<Value, RpcError>;
 
-/// Copies this hc there, then adds the machine.
+/// Copies this hc there, then adds the machine; also what it did there.
 #[cfg(not(feature = "nearshell"))]
-fn install_and_add(paths: &Paths, reach: Reach, p: &MachineAddParams, call: Call) -> Result<Value, RpcError> {
-    let version = crate::machines::install(paths, reach, p.session.as_deref())?;
-    eprintln!("{} now has {version}", reach.target);
-    call("machine.add", to(p))
+fn install_and_add(
+    paths: &Paths,
+    reach: Reach,
+    p: &MachineAddParams,
+    call: Call,
+    steps: &mut Progress,
+) -> Result<(Value, String), RpcError> {
+    let version = crate::machines::install(paths, reach, p.session.as_deref(), &mut |s| steps.stage(s))?;
+    steps.done("done");
+    if !steps.on() {
+        eprintln!("{} now has {version}", reach.target);
+    }
+    steps.start("adding it here");
+    let m = call("machine.add", to(p))?;
+    steps.done("done");
+    Ok((m, format!("installed {version}")))
 }
 
 /// Puts this hub's remote core there, then adds the machine: it must answer
-/// as the build installed.
+/// as the build installed. Also what it did there.
 #[cfg(feature = "nearshell")]
-fn install_and_add(paths: &Paths, reach: Reach, p: &MachineAddParams, call: Call) -> Result<Value, RpcError> {
-    let landed = crate::machines::deliver(paths, reach)?;
-    eprintln!("{}: {}", reach.target, crate::machines::summary(&landed));
+fn install_and_add(
+    paths: &Paths,
+    reach: Reach,
+    p: &MachineAddParams,
+    call: Call,
+    steps: &mut Progress,
+) -> Result<(Value, String), RpcError> {
+    let landed = crate::machines::deliver(paths, reach, &mut |s| steps.stage(s))?;
+    steps.done("done");
+    let summary = crate::machines::summary(&landed);
+    if !steps.on() {
+        eprintln!("{}: {summary}", reach.target);
+    }
+    steps.start("adding it here");
     let m = call("machine.add", to(p))?;
     match m["build"] == json!(landed.build) {
-        true => Ok(m),
+        true => {
+            steps.done("done");
+            Ok((m, summary))
+        }
         false => Err(unverified(m["name"].as_str().unwrap_or_default(), &format!("answers as {}", m["build"]))),
     }
 }
 
+/// Nothing to ask a person for: the usage error clap gives `machine add`
+/// without a target, as it always gave it (`None`: a person is asked).
+pub(super) fn target_missing(cmd: &Option<Cmd>, json: bool, args: &[std::ffi::OsString]) -> Option<clap::Error> {
+    let Some(Cmd::Machine { action: MachineCmd::Add(p) }) = cmd else { return None };
+    if p.target.is_some() || p.via.is_some() || (!json && at_terminal()) {
+        return None;
+    }
+    use clap::CommandFactory;
+    let strict = branded_command(Cli::command()).mut_subcommand("machine", |m| {
+        m.mut_subcommand("add", |a| a.mut_arg("target", |t| t.required_unless_present("via")))
+    });
+    strict.try_get_matches_from(std::env::args_os().take(1).chain(args.iter().cloned())).err()
+}
+
+/// Adds a machine: asked for in a terminal, installed there when it has to be.
+fn add(paths: &Paths, mut p: MachineAddParams, person: bool, call: Call) -> Result<Out, RpcError> {
+    let s = |v: &Value| v.as_str().unwrap_or_default().to_string();
+    if p.target.is_none() && p.via.is_none() {
+        if !person {
+            return Err(RpcError::new(
+                "usage",
+                "the following required arguments were not provided: <TARGET>",
+                format!("see `{CLI_NAME} --help`"),
+            ));
+        }
+        flow::ask(&mut p, call)?;
+    }
+    let target = p.via.clone().or_else(|| p.target.clone().map(crate::machines::ssh_target)).unwrap_or_default();
+    let reach = crate::machines::Reach { target: &target, via: p.via.is_some() };
+    if cfg!(feature = "nearshell") && p.session.is_some() {
+        return Err(RpcError::new(
+            "usage",
+            "a Nearshell machine runs one remote core: there is no session to pick",
+            "leave out --session",
+        ));
+    }
+    let mut steps = Progress::new(person, &target);
+    if at_terminal() {
+        steps.login(reach, || crate::machines::login(paths, reach))?;
+    }
+    // Nearshell installs only where its own remote core is missing or
+    // older; a newer, conflicting or incompatible one is reported as is.
+    let installs: [&str; 2] =
+        if cfg!(feature = "nearshell") { ["hc_missing", "needs_update"] } else { ["hc_missing", "incompatible"] };
+    steps.start(if cfg!(feature = "nearshell") { "looking for the remote core there" } else { "looking for hc there" });
+    let (m, did) = match call("machine.add", to(&p)) {
+        Err(e) if (p.install || at_terminal()) && installs.contains(&e.kind.as_str()) => {
+            steps.done(if e.kind == "hc_missing" { "not installed" } else { "an older one" });
+            let what = match (e.kind.as_str(), cfg!(feature = "nearshell")) {
+                ("hc_missing", false) => &format!("has no {CLI_NAME}"),
+                (_, false) => &format!("has an {CLI_NAME} too old to talk to"),
+                ("hc_missing", true) => "has no Nearshell remote core",
+                (_, true) => "runs an older Nearshell remote core",
+            };
+            if !p.install {
+                match cfg!(feature = "nearshell") {
+                    true => eprint!("{target} {what}. Install this Mac's remote core there? [Y/n] "),
+                    false => {
+                        eprint!("{target} {what}. Copy this {CLI_NAME} ({}) there? [Y/n] ", env!("CARGO_PKG_VERSION"))
+                    }
+                }
+                let mut answer = String::new();
+                std::io::stdin().read_line(&mut answer).map_err(|err| RpcError::internal(err.to_string()))?;
+                if answer.trim().to_lowercase().starts_with('n') {
+                    return Err(e);
+                }
+            }
+            install_and_add(paths, reach, &p, call, &mut steps)?
+        }
+        other => {
+            let m = other?;
+            steps.done("found");
+            let did = format!("{} answers, {CLI_NAME} {}", s(&m["target"]), s(&m["version"]));
+            (m, did)
+        }
+    };
+    if !person {
+        let human = format!("added {}: {} answers, {CLI_NAME} {}", s(&m["name"]), s(&m["target"]), s(&m["version"]));
+        return Ok(Out { human: human + &logout_warning(&m), json: m });
+    }
+    steps.start("waiting for the line");
+    let view = reached(call, &s(&m["id"]))?;
+    steps.done(&line_state(&view));
+    if view["state"] != "connected" {
+        return Err(not_reached(&view, &format!("added {}", s(&m["name"]))));
+    }
+    let human = format!("added {}: {did}; {}", s(&view["name"]), line_state(&view));
+    Ok(Out { human: human + &logout_warning(&view), json: view })
+}
+
+/// Logs in from this terminal, then has the hub dial again at once. In a
+/// terminal it ends with what the hub reached.
+fn login(paths: &Paths, key: &str, person: bool, call: Call) -> Result<Out, RpcError> {
+    if !at_terminal() {
+        return Err(RpcError::new("usage", "logging in needs a terminal", "a person types the password or code"));
+    }
+    let m = listed(call, key)?;
+    let (name, id) = (m["name"].as_str().unwrap_or_default(), m["id"].as_str().unwrap_or_default());
+    let mut steps = Progress::new(person, m["target"].as_str().unwrap_or_default());
+    steps.login(reach_of(&m), || crate::machines::login(paths, reach_of(&m)))?;
+    let view = call("machine.connect", json!({"machine": id}))?;
+    if !person {
+        return Ok(Out { human: format!("logged in to {name}: {}", line_state(&view)), json: view });
+    }
+    steps.start("waiting for the line");
+    let view = reached(call, id)?;
+    steps.done(&line_state(&view));
+    if view["state"] != "connected" {
+        return Err(not_reached(&view, &format!("logged in to {} here", reach_of(&m).target)));
+    }
+    Ok(Out {
+        human: format!("logged in to {}: {}", view["name"].as_str().unwrap_or(name), line_state(&view)),
+        json: view,
+    })
+}
+
 /// Copies this hc there and restarts hc there.
 #[cfg(not(feature = "nearshell"))]
-fn update(paths: &Paths, name: &str, m: &Value, _: Call) -> Result<Out, RpcError> {
-    let version = crate::machines::install(paths, reach_of(m), m["session"].as_str())?;
+fn update(paths: &Paths, m: &Value, call: Call, steps: &mut Progress) -> Result<Out, RpcError> {
+    let name = m["name"].as_str().unwrap_or_default();
+    let version = crate::machines::install(paths, reach_of(m), m["session"].as_str(), &mut |s| steps.stage(s))?;
+    steps.done("done");
     let human = format!("{name} now runs {version}; its terminals kept running");
+    if steps.on() {
+        steps.start("waiting for the line");
+        let view = reached(call, m["id"].as_str().unwrap_or_default())?;
+        steps.done(&line_state(&view));
+        if view["state"] != "connected" {
+            return Err(not_reached(&view, &format!("{name} now runs {version}")));
+        }
+    }
     Ok(Out { json: json!({"machine": name, "version": version}), human })
 }
 
@@ -78,17 +262,21 @@ fn update(paths: &Paths, name: &str, m: &Value, _: Call) -> Result<Out, RpcError
 /// dials it until it answers as that build. A machine held for a newer, a
 /// conflicting or an incompatible core is left as it is.
 #[cfg(feature = "nearshell")]
-fn update(paths: &Paths, name: &str, m: &Value, call: Call) -> Result<Out, RpcError> {
+fn update(paths: &Paths, m: &Value, call: Call, steps: &mut Progress) -> Result<Out, RpcError> {
     use crate::machines::Refusal;
+    let (name, id) = (m["name"].as_str().unwrap_or_default(), m["id"].as_str().unwrap_or_default());
     let state = m["state"].as_str().unwrap_or_default();
     if let Some(refusal) = Refusal::named(state).filter(|r| *r != Refusal::NeedsUpdate) {
         return Err(refusal.refused(name, m["why"].as_str().unwrap_or(state)));
     }
-    let landed = crate::machines::deliver(paths, reach_of(m))?;
+    let landed = crate::machines::deliver(paths, reach_of(m), &mut |s| steps.stage(s))?;
+    steps.done("done");
     let build = json!(landed.build);
+    let mut human = format!("{name}: {}", crate::machines::summary(&landed));
+    steps.start("waiting for the line");
     let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
     let view = loop {
-        let view = call("machine.connect", json!({"machine": name}))?;
+        let view = call("machine.connect", json!({"machine": id}))?;
         let state = view["state"].as_str().unwrap_or_default();
         if state == "connected" && view["build"] == build {
             break view;
@@ -96,13 +284,17 @@ fn update(paths: &Paths, name: &str, m: &Value, call: Call) -> Result<Out, RpcEr
         // Held again, or what only a person can settle: it will not come back by waiting.
         let person = ["needs_login", "host_key_unknown", "host_key_changed", "different_core"].contains(&state);
         if Refusal::named(state).is_some() || person || std::time::Instant::now() > end {
+            steps.done(&line_state(&view));
+            if steps.on() {
+                return Err(not_reached(&view, &human));
+            }
             let why = view["why"].as_str().map(|w| format!(": {w}")).unwrap_or_default();
             return Err(unverified(name, &format!("is {state}{why}")));
         }
         // Its old line may not have dropped yet, or it is being dialled.
         std::thread::sleep(std::time::Duration::from_millis(200));
     };
-    let mut human = format!("{name}: {}", crate::machines::summary(&landed));
+    steps.done(&line_state(&view));
     if landed.restarted {
         human.push_str("; its terminals kept running");
     }
@@ -145,64 +337,18 @@ fn reach_of(m: &Value) -> Reach<'_> {
     Reach { target: m["target"].as_str().unwrap_or_default(), via: m["via"] == true }
 }
 
+/// `json`: the output is JSON (asked for, or piped); a person in a terminal
+/// gets the flows of `flow` otherwise.
 pub(super) fn machine(
     paths: &Paths,
     action: MachineCmd,
+    json: bool,
     call: impl Fn(&str, Value) -> Result<Value, RpcError>,
 ) -> Result<Out, RpcError> {
     let s = |v: &Value| v.as_str().unwrap_or_default().to_string();
+    let person = !json && at_terminal();
     Ok(match action {
-        MachineCmd::Add(p) => {
-            let target =
-                p.via.clone().or_else(|| p.target.clone().map(crate::machines::ssh_target)).unwrap_or_default();
-            let reach = crate::machines::Reach { target: &target, via: p.via.is_some() };
-            if cfg!(feature = "nearshell") && p.session.is_some() {
-                return Err(RpcError::new(
-                    "usage",
-                    "a Nearshell machine runs one remote core: there is no session to pick",
-                    "leave out --session",
-                ));
-            }
-            if at_terminal() {
-                crate::machines::login(paths, reach)?;
-            }
-            // Nearshell installs only where its own remote core is missing or
-            // older; a newer, conflicting or incompatible one is reported as is.
-            let installs: [&str; 2] = if cfg!(feature = "nearshell") {
-                ["hc_missing", "needs_update"]
-            } else {
-                ["hc_missing", "incompatible"]
-            };
-            let m = match call("machine.add", to(&p)) {
-                Err(e) if (p.install || at_terminal()) && installs.contains(&e.kind.as_str()) => {
-                    let what = match (e.kind.as_str(), cfg!(feature = "nearshell")) {
-                        ("hc_missing", false) => &format!("has no {CLI_NAME}"),
-                        (_, false) => &format!("has an {CLI_NAME} too old to talk to"),
-                        ("hc_missing", true) => "has no Nearshell remote core",
-                        (_, true) => "runs an older Nearshell remote core",
-                    };
-                    if !p.install {
-                        match cfg!(feature = "nearshell") {
-                            true => eprint!("{target} {what}. Install this Mac's remote core there? [Y/n] "),
-                            false => eprint!(
-                                "{target} {what}. Copy this {CLI_NAME} ({}) there? [Y/n] ",
-                                env!("CARGO_PKG_VERSION")
-                            ),
-                        }
-                        let mut answer = String::new();
-                        std::io::stdin().read_line(&mut answer).map_err(|err| RpcError::internal(err.to_string()))?;
-                        if answer.trim().to_lowercase().starts_with('n') {
-                            return Err(e);
-                        }
-                    }
-                    install_and_add(paths, reach, &p, &call)?
-                }
-                other => other?,
-            };
-            let human =
-                format!("added {}: {} answers, {CLI_NAME} {}", s(&m["name"]), s(&m["target"]), s(&m["version"]));
-            Out { human: human + &logout_warning(&m), json: m }
-        }
+        MachineCmd::Add(p) => add(paths, p, person, &call)?,
         MachineCmd::Ls => {
             let r = call("machine.list", json!({}))?;
             let rows: Vec<String> = r["machines"]
@@ -229,40 +375,14 @@ pub(super) fn machine(
             };
             Out { json: r, human }
         }
-        MachineCmd::Login(p) => {
-            if !at_terminal() {
-                return Err(RpcError::new(
-                    "usage",
-                    "logging in needs a terminal",
-                    "a person types the password or code",
-                ));
+        MachineCmd::Login { p, .. } => login(paths, &p.machine, person, &call)?,
+        MachineCmd::Update { p, .. } => {
+            let m = listed(&call, &p.machine)?;
+            let mut steps = Progress::new(person, m["target"].as_str().unwrap_or_default());
+            if person {
+                steps.login(reach_of(&m), || crate::machines::login(paths, reach_of(&m)))?;
             }
-            let r = call("machine.list", json!({}))?;
-            let found = r["machines"].as_array().into_iter().flatten().find(|m| m["name"] == p.machine.as_str());
-            let Some(m) = found else {
-                return Err(RpcError::new(
-                    "machine_unknown",
-                    format!("unknown machine {:?}", p.machine),
-                    format!("see `{CLI_NAME} machine ls`"),
-                ));
-            };
-            crate::machines::login(paths, reach_of(m))?;
-            let m = call("machine.connect", to(&p))?;
-            let human = format!("logged in to {}: {}", p.machine, line_state(&m));
-            Out { json: m, human }
-        }
-        MachineCmd::Update(p) => {
-            let r = call("machine.list", json!({}))?;
-            let found =
-                r["machines"].as_array().into_iter().flatten().find(|m| m["name"] == p.machine.as_str()).cloned();
-            let Some(m) = found else {
-                return Err(RpcError::new(
-                    "machine_unknown",
-                    format!("unknown machine {:?}", p.machine),
-                    format!("see `{CLI_NAME} machine ls`"),
-                ));
-            };
-            update(paths, &p.machine, &m, &call)?
+            update(paths, &m, &call, &mut steps)?
         }
         MachineCmd::Rename(p) => {
             let m = call("machine.rename", to(&p))?;
@@ -293,13 +413,13 @@ mod tests {
             let remote = json!({"name":"cloud", "target":"user@cloud", "version":"test",
                 "keeps_running_after_logout":state, "logout_linger_user":"-remote-user"});
             let params = serde_json::from_value(json!({"via":"ssh user@cloud", "name":"cloud"})).unwrap();
-            let added = machine(&paths, MachineCmd::Add(params), |_, _| Ok(remote.clone())).unwrap();
+            let added = machine(&paths, MachineCmd::Add(params), true, |_, _| Ok(remote.clone())).unwrap();
             assert_eq!(added.json, remote);
             assert_eq!(added.human.contains("warning:"), state == false);
             if state == false {
                 assert!(added.human.contains("sudo loginctl enable-linger -- -remote-user"));
             }
-            let listed = machine(&paths, MachineCmd::Ls, |_, _| Ok(json!({"machines":[remote]}))).unwrap();
+            let listed = machine(&paths, MachineCmd::Ls, true, |_, _| Ok(json!({"machines":[remote]}))).unwrap();
             assert_eq!(listed.human.contains("stops at logout"), state == false);
         }
     }
@@ -307,7 +427,7 @@ mod tests {
     #[test]
     fn machine_ls_says_what_a_person_must_do_and_when_a_line_is_catching_up() {
         let paths = Paths { socket: "u".into(), holder_socket: "u".into(), state: "u".into(), config: "u".into() };
-        let row = |m: Value| machine(&paths, MachineCmd::Ls, |_, _| Ok(json!({"machines":[m]}))).unwrap().human;
+        let row = |m: Value| machine(&paths, MachineCmd::Ls, true, |_, _| Ok(json!({"machines":[m]}))).unwrap().human;
         let m = |state: &str, synced: bool| {
             let mut m = json!({"name":"box","target":"box","version":"0.1.22","state":state,"synced":synced});
             if state != "connected" {
@@ -337,7 +457,7 @@ mod tests {
     fn machine_ls_shows_the_build_there_and_why_a_held_one_waits() {
         let paths = Paths { socket: "u".into(), holder_socket: "u".into(), state: "u".into(), config: "u".into() };
         let build = json!({"commit":"0123456789abcdef0123","patchset":"p2","releaseSeq":5,"config":"dev:x:remote"});
-        let row = |m: Value| machine(&paths, MachineCmd::Ls, |_, _| Ok(json!({"machines":[m]}))).unwrap().human;
+        let row = |m: Value| machine(&paths, MachineCmd::Ls, true, |_, _| Ok(json!({"machines":[m]}))).unwrap().human;
         let m = |state: &str, build: Value| json!({"name":"box","target":"box","version":"0.1.22","build":build,"state":state,"why":"box runs a newer one"});
         assert!(row(m("connected", build.clone())).contains("nhc 0.1.22 build 5 0123456789ab p2"));
         assert!(row(m("connected", Value::Null)).contains("nhc 0.1.22 build unknown"));

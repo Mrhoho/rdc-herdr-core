@@ -340,7 +340,7 @@ Other machines, reached over ssh
 Usage: hc machine [OPTIONS] <COMMAND>
 
 Commands:
-  add     Add a machine you reach with ssh: hc machine add vps
+  add     Add a machine you reach with ssh: hc machine add vps. In a terminal, without a target, it asks for one and for a name
   ls      List the machines added here
   login   Log in again (a password or code) after the machine says it needs one. On Windows: reconnect once its SSH keys work
   update  Copy this hc there and restart hc there (its terminals keep running)
@@ -356,18 +356,19 @@ Options:
 ## hc machine add
 
 ```text
-Add a machine you reach with ssh: hc machine add vps
+Add a machine you reach with ssh: hc machine add vps. In a terminal, without a target, it asks for one and for a name
 
 Usage: hc machine add [OPTIONS] [TARGET]
 
 Arguments:
-  [TARGET]  How ssh reaches it: `vps`, `can@10.0.0.7`, `can@10.0.0.7:2222`, a Host from ~/.ssh/config
+  [TARGET]  How ssh reaches it: `vps`, `can@10.0.0.7`, `can@10.0.0.7:2222`, a Host from ~/.ssh/config. Needed unless --via; a person in a terminal is asked for it
 
 Options:
       --json               JSON output even in a terminal
       --via <COMMAND>      Reach it with this command instead of ssh: it is given a shell line to run there as its last argument, like ssh (`ssh -p 2222 -i key user@ip`, `fly ssh console -a app --pty=false -C`). It must pass bytes both ways untouched and ask nothing. Needs --name. On Windows, a program and its arguments (CommandLineToArgvW split, no shell), with the remote line appended as one argument, no console window; Unix stays an sh line. WSL: --via 'wsl.exe -d Ubuntu -e sh -c' --name wsl
       --temp               Mark it short-lived (a sandbox for a task), so clients can show it apart from machines that stay. hc treats it like any other; remove it with `hc machine rm`
       --install            Copy this hc there when it has none or one too old, without asking (for scripts; in a terminal you are asked)
+      --hold               After the outcome, wait for Enter before exiting (same exit status). Only in a terminal: without one it exits at once
       --name <NAME>        What to call it here (default: the target's host)
       --session <SESSION>  The hc session on that machine (default: its default)
   -h, --help               Print help
@@ -381,9 +382,10 @@ Log in again (a password or code) after the machine says it needs one. On Window
 Usage: hc machine login [OPTIONS] <MACHINE>
 
 Arguments:
-  <MACHINE>  The machine's name
+  <MACHINE>  The machine's name, or its id (which stays when it is renamed)
 
 Options:
+      --hold  After the outcome, wait for Enter before exiting (same exit status). Only in a terminal: without one it exits at once
       --json  JSON output even in a terminal
   -h, --help  Print help
 ```
@@ -408,7 +410,7 @@ Give a machine a new name here
 Usage: hc machine rename [OPTIONS] <MACHINE> <NEW_NAME>
 
 Arguments:
-  <MACHINE>   The machine's name now
+  <MACHINE>   The machine's name now, or its id
   <NEW_NAME>  Its new name. Addresses with the old one stop working
 
 Options:
@@ -424,7 +426,7 @@ Forget a machine (its terminals keep running there)
 Usage: hc machine rm [OPTIONS] <MACHINE>
 
 Arguments:
-  <MACHINE>  The machine's name
+  <MACHINE>  The machine's name, or its id (which stays when it is renamed)
 
 Options:
       --json  JSON output even in a terminal
@@ -439,9 +441,10 @@ Copy this hc there and restart hc there (its terminals keep running)
 Usage: hc machine update [OPTIONS] <MACHINE>
 
 Arguments:
-  <MACHINE>  The machine's name
+  <MACHINE>  The machine's name, or its id (which stays when it is renamed)
 
 Options:
+      --hold  After the outcome, wait for Enter before exiting (same exit status). Only in a terminal: without one it exits at once
       --json  JSON output even in a terminal
   -h, --help  Print help
 ```

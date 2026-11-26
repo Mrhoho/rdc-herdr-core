@@ -183,7 +183,7 @@ impl Core {
             Default::default()
         });
         std::fs::create_dir_all(paths.state.join("screens"))?;
-        let machines = read_state(&paths.state.join("machines.json"))?;
+        let machines = crate::machines::load(&paths.state, &info)?;
         let peers = read_state(&paths.state.join("peers.json"))?;
         let (jobs, jobs_rx) = tokio::sync::mpsc::unbounded_channel();
         let paint_limit = crate::config::load(&paths.config).unwrap_or_default().viewer_pending_bytes();

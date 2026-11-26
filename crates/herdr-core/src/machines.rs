@@ -1,6 +1,6 @@
 //! Other machines: their profiles, and the pipe to the core on each.
 
-use crate::addr::check_name;
+use crate::addr::{check_machine_name, check_name};
 use crate::branding::COMMAND as CLI_NAME;
 use crate::rpc::RpcError;
 use schemars::JsonSchema;
@@ -13,12 +13,16 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 #[cfg(feature = "nearshell")]
 mod deliver;
+mod install;
 pub(crate) mod nearshell;
 #[cfg(feature = "nearshell")]
 mod payload;
 mod refused;
 #[cfg(feature = "nearshell")]
 pub use deliver::deliver;
+pub use install::{ARRIVED, Stage, install};
+#[cfg(feature = "nearshell")]
+use install::{last_line, platform, run_raw};
 pub use nearshell::Refusal;
 #[cfg(feature = "nearshell")]
 pub use payload::{Landed, describe, install_line, not_expected, parse_expect, summary};
@@ -133,6 +137,47 @@ pub fn unknown(machines: &[Machine], name: &str) -> crate::rpc::RpcError {
     crate::rpc::RpcError::new("machine_unknown", format!("unknown machine {name:?}"), hint)
 }
 
+/// machines.json as this core keeps it. Routing takes a name or an id, so a
+/// name it could take for another machine (shaped like a core id, another
+/// machine's id, this core's name or id, a name twice) or no valid name at all
+/// is renamed after its host, once, and said: its id still reaches it.
+pub fn load(state: &Path, core: &crate::api::CoreInfo) -> io::Result<Vec<Machine>> {
+    let mut machines: Vec<Machine> = crate::paths::read_state(&state.join("machines.json"))?;
+    let renamed = settle_names(&mut machines, core);
+    for (old, new) in &renamed {
+        let _ = writeln!(io::stderr(), "core: machine {old:?} is now {new:?}: the old name could be taken for another");
+    }
+    if !renamed.is_empty() {
+        save(state, &machines);
+    }
+    Ok(machines)
+}
+
+fn settle_names(machines: &mut [Machine], core: &crate::api::CoreInfo) -> Vec<(String, String)> {
+    let mut renamed = Vec::new();
+    for i in 0..machines.len() {
+        let fresh = {
+            let others = |name: &str, before: bool| {
+                name == core.name
+                    || name == core.id
+                    || machines
+                        .iter()
+                        .enumerate()
+                        .any(|(j, m)| j != i && (m.id == name || ((j < i || !before) && m.name == name)))
+            };
+            let m = &machines[i];
+            if check_machine_name(&m.name).is_ok() && !others(&m.name, true) {
+                continue;
+            }
+            let taken = |name: &str| others(name, false);
+            let from = if m.via { m.host.as_str() } else { m.target.as_str() };
+            default_name(from, taken).or_else(|| default_name("machine", taken)).expect("a numbered name is free")
+        };
+        renamed.push((std::mem::replace(&mut machines[i].name, fresh.clone()), fresh));
+    }
+    renamed
+}
+
 pub fn save(state: &Path, machines: &[Machine]) {
     let bytes = serde_json::to_vec_pretty(machines).expect("machines serialize");
     if let Err(e) = crate::paths::write_atomic(&state.join("machines.json"), &bytes) {
@@ -157,7 +202,8 @@ pub fn ssh_target(target: String) -> String {
     }
 }
 
-/// A free name from the target's host: `can@rohan.lan` -> `rohan`; IPs stay whole.
+/// A free name from the target's host: `can@rohan.lan` -> `rohan`; IPs stay
+/// whole. One shaped like a terminal or a core id gets a number too.
 pub fn default_name(target: &str, taken: impl Fn(&str) -> bool) -> Option<String> {
     let t = target.strip_prefix("ssh://").unwrap_or(target);
     let host = t.rsplit_once('@').map_or(t, |(_, host)| host);
@@ -172,7 +218,7 @@ pub fn default_name(target: &str, taken: impl Fn(&str) -> bool) -> Option<String
     }
     let base = name.clone();
     let mut number = 1;
-    while crate::terminals::id_shaped(&name) || taken(&name) {
+    while crate::terminals::id_shaped(&name) || crate::addr::id_like(&name) || taken(&name) {
         number += 1;
         let suffix = format!("-{number}");
         name = format!("{}{}", base[..base.len().min(32 - suffix.len())].trim_end_matches('-'), suffix);
@@ -240,7 +286,8 @@ pub fn login(paths: &crate::paths::Paths, to: Reach) -> Result<(), RpcError> {
         return Ok(());
     }
     paths.create_dirs().map_err(|e| RpcError::internal(e.to_string()))?;
-    let mut cmd = ssh(paths, target, &["BatchMode=no", "ControlPersist=600"]);
+    // The shared login watches its link too: a dead one ends it, and what rides it.
+    let mut cmd = ssh(paths, target, &["BatchMode=no", "ControlPersist=600", KEEPALIVE[0], KEEPALIVE[1]]);
     cmd.env_remove("SSH_ASKPASS").env("SSH_ASKPASS_REQUIRE", "never").arg(target).arg("exit");
     match cmd.status() {
         Ok(s) if s.success() => Ok(()),
@@ -261,6 +308,9 @@ pub fn logout(paths: &crate::paths::Paths, to: Reach) {
         let _ = cmd.status();
     }
 }
+
+/// ssh's own watch on a link: one silent for a minute is given up.
+const KEEPALIVE: [&str; 2] = ["ServerAliveInterval=15", "ServerAliveCountMax=4"];
 
 /// Targets found to be Windows, so redials go straight.
 static WINDOWS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
@@ -301,7 +351,7 @@ fn pipe(
             "sh -c 'p=$(command -v herdr-core) || p=$HOME/.local/bin/herdr-core; [ -x \"$p\" ] || {{ echo \"{NOT_HERE}\" >&2; exit 127; }}; {session}exec \"$p\" connect'"
         )
     };
-    let options = ["BatchMode=yes", "ConnectTimeout=10", "ServerAliveInterval=15", "ServerAliveCountMax=4"];
+    let options = ["BatchMode=yes", "ConnectTimeout=10", KEEPALIVE[0], KEEPALIVE[1]];
     let mut cmd = tokio::process::Command::from(to.command(paths, &options, &remote)?);
     cmd.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
     cmd.kill_on_drop(true);
@@ -469,221 +519,9 @@ async fn dial_once(
     }
 }
 
-/// `uname -sm` as this binary names platforms: `linux x86_64`, `macos aarch64`.
-fn platform(uname: &str) -> String {
-    let mut words = uname.split_whitespace();
-    let os = match words.next() {
-        Some("Linux") => "linux",
-        Some("Darwin") => "macos",
-        Some(os) if os.starts_with("MINGW") || os.starts_with("MSYS") => "windows",
-        other => other.unwrap_or("?"),
-    };
-    let arch = match words.next() {
-        Some("arm64" | "aarch64") => "aarch64",
-        Some("x86_64" | "amd64") => "x86_64",
-        other => other.unwrap_or("?"),
-    };
-    format!("{os} {arch}")
-}
-
-/// Runs `command` there as its login shell takes it (riding the shared
-/// login), feeding it `input`: the last line it printed.
-fn run_there(paths: &crate::paths::Paths, to: Reach, command: &str, input: &[u8]) -> Result<String, RpcError> {
-    let out = run_raw(paths, to, command, input)?;
-    match out.status.success() {
-        true => Ok(last_line(&out.stdout)),
-        false => Err(RpcError::new(
-            "install_failed",
-            format!("on {}: {}", to.target, last_line(&out.stderr)),
-            "nothing was changed there",
-        )),
-    }
-}
-
-fn last_line(b: &[u8]) -> String {
-    String::from_utf8_lossy(b).lines().rfind(|l| !l.trim().is_empty()).unwrap_or_default().trim().to_string()
-}
-
-fn run_raw(
-    paths: &crate::paths::Paths,
-    to: Reach,
-    command: &str,
-    input: &[u8],
-) -> Result<std::process::Output, RpcError> {
-    use std::io::Write;
-    let mut cmd = to.command(paths, &["BatchMode=yes", "ConnectTimeout=10"], command)?;
-    cmd.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
-    let mut child = cmd.spawn().map_err(|e| unreachable(to, &format!("cannot run it: {e}")))?;
-    let mut stdin = child.stdin.take().expect("piped");
-    let input = input.to_vec();
-    let feeder = std::thread::spawn(move || stdin.write_all(&input));
-    let out = child.wait_with_output().map_err(|e| unreachable(to, &e.to_string()))?;
-    let _ = feeder.join();
-    Ok(out)
-}
-
-/// Copies this very hc to `target` (same OS and CPU only), swaps it in at
-/// ~/.local/bin/herdr-core (adding `hc` beside it only if there is none),
-/// and restarts hc there in `session`, so terminals there keep running.
-/// Returns what the installed one says it is.
-pub fn install(paths: &crate::paths::Paths, to: Reach, session: Option<&str>) -> Result<String, RpcError> {
-    crate::branding::upstream_distribution()?;
-    check_target(to)?;
-    let target = to.target;
-    if let Some(s) = session {
-        check_name(s)?;
-    }
-    let here = format!("{} {}", std::env::consts::OS, std::env::consts::ARCH);
-    let probe = run_raw(paths, to, "uname -sm", b"")?;
-    let there = platform(&last_line(&probe.stdout));
-    let windows = if probe.status.success() {
-        there.starts_with("windows ")
-    } else {
-        let native = run_raw(paths, to, "cmd /d /c \"echo herdr-core-windows\"", b"")?;
-        native.status.success() && last_line(&native.stdout) == "herdr-core-windows"
-    };
-    if windows {
-        if to.via {
-            return Err(RpcError::new(
-                "install_failed",
-                format!("{target} runs Windows"),
-                format!("install {CLI_NAME} there yourself"),
-            ));
-        }
-        WINDOWS.lock().unwrap_or_else(|p| p.into_inner()).push(target.to_string());
-        return install_windows(paths, target, session);
-    }
-    if !probe.status.success() {
-        return Err(RpcError::new(
-            "install_failed",
-            format!("on {target}: {}", last_line(&probe.stderr)),
-            "nothing was changed there",
-        ));
-    }
-    // Same OS and CPU: this very hc. Else this version's released build for it.
-    let scratch = crate::releases::Scratch::new()?;
-    let macos = there.starts_with("macos ");
-    let bundle = !macos || run_there(paths, to, "id -u", b"")? != "0";
-    let current = std::env::current_exe()
-        .and_then(|path| path.canonicalize())
-        .map_err(|e| RpcError::internal(format!("cannot find this hc: {e}")))?;
-    let bin = if there == here && (bundle || !current.ends_with("Herdr Core.app/Contents/MacOS/herdr-core")) {
-        current
-    } else {
-        let version = env!("CARGO_PKG_VERSION");
-        let not_released = |_| {
-            RpcError::new(
-                "install_failed",
-                format!("{target} is {there}, and {CLI_NAME} {version} has no release to download"),
-                format!("install {CLI_NAME} there yourself"),
-            )
-        };
-        let m = crate::releases::manifest(Some(version), &scratch.0).map_err(not_released)?;
-        crate::releases::download(&m, &there.replace(' ', "-"), &scratch.0, bundle)?
-    };
-    let (exe, bundled) = install_payload(&bin, &scratch.0)?;
-    let n = exe.len();
-    let session = session.map(|s| format!("HC_SESSION={s} ")).unwrap_or_default();
-    if bundled {
-        let script = format!(
-            "set -e; d=$HOME/.local/bin; mkdir -p \"$d\"; t=$(mktemp -d); trap \"rm -rf \\\"$t\\\"\" EXIT; \
-             head -c {n} > \"$t/core.tar\"; [ $(wc -c < \"$t/core.tar\") -eq {n} ]; \
-             tar -xf \"$t/core.tar\" -C \"$t\"; b=\"$t/Herdr Core.app/Contents/MacOS/herdr-core\"; \
-             \"$b\" --hc-install-bundle \"$b\" \"$d/herdr-core\"; \
-             {session}\"$d/herdr-core\" server restart > /dev/null; \"$d/herdr-core\" --version"
-        );
-        return run_there(paths, to, &format!("sh -c '{script}'"), &exe);
-    }
-    let guard = if macos {
-        "case $(readlink \"$d/herdr-core\" || true) in */Contents/MacOS/herdr-core) \
-         echo \"a bundled remote core needs a complete bundle; run hc update on that machine\" >&2; exit 5;; esac; "
-    } else {
-        ""
-    };
-    // Into a temp file beside the target, checked whole and running, then swapped.
-    let script = format!(
-        "set -e; d=$HOME/.local/bin; mkdir -p $d; {guard}rm -f $d/.herdr-core.new.*; t=$d/.herdr-core.new.$$; \
-         head -c {n} > $t; [ $(($(wc -c < $t))) -eq {n} ] || {{ rm -f $t; echo \"the copy arrived incomplete\" >&2; exit 3; }}; \
-         chmod 755 $t; $t --version > /dev/null || {{ rm -f $t; echo \"this {CLI_NAME} does not run there\" >&2; exit 4; }}; \
-         mv -f $t $d/herdr-core; command -v hc > /dev/null 2>&1 || [ -e $d/hc ] || ln -s herdr-core $d/hc; \
-         {session}$d/herdr-core server restart > /dev/null; $d/herdr-core --version"
-    );
-    run_there(paths, to, &format!("sh -c '{script}'"), &exe)
-}
-
-fn install_payload(bin: &Path, scratch: &Path) -> Result<(Vec<u8>, bool), RpcError> {
-    let bundled = bin.ends_with("Herdr Core.app/Contents/MacOS/herdr-core");
-    let path = if bundled {
-        let root = bin.parent().unwrap().parent().unwrap().parent().unwrap();
-        let archive = scratch.join("core-bundle.tar");
-        let status = std::process::Command::new("tar")
-            .arg("-cf")
-            .arg(&archive)
-            .arg("-C")
-            .arg(root.parent().unwrap())
-            .arg("Herdr Core.app")
-            .env("COPYFILE_DISABLE", "1")
-            .status()
-            .map_err(|e| RpcError::internal(e.to_string()))?;
-        if !status.success() {
-            return Err(RpcError::internal("cannot pack the core bundle"));
-        }
-        archive
-    } else {
-        bin.to_path_buf()
-    };
-    let bytes = std::fs::read(path).map_err(|e| RpcError::internal(e.to_string()))?;
-    Ok((bytes, bundled))
-}
-
-/// Windows there: this version's release zip and the installer go to its
-/// home folder, and the installer runs from them (no download there). It
-/// swaps an hc already there the planned way, so its terminals keep running.
-fn install_windows(paths: &crate::paths::Paths, target: &str, session: Option<&str>) -> Result<String, RpcError> {
-    let scratch = crate::releases::Scratch::new()?;
-    let version = env!("CARGO_PKG_VERSION");
-    let m = crate::releases::manifest(Some(version), &scratch.0).map_err(|_| {
-        RpcError::new(
-            "install_failed",
-            format!("{target} runs Windows, and {CLI_NAME} {version} has no release to download"),
-            format!("install {CLI_NAME} there yourself"),
-        )
-    })?;
-    let zip = crate::releases::fetch(&m, "windows-x86_64", &scratch.0)?;
-    let script = scratch.0.join("hc-install.ps1");
-    std::fs::write(&script, include_str!("../../../distribution/install.ps1"))
-        .map_err(|e| RpcError::internal(e.to_string()))?;
-    std::fs::copy(&zip, scratch.0.join("hc-install.zip")).map_err(|e| RpcError::internal(e.to_string()))?;
-    let mut scp = std::process::Command::new("scp");
-    scp.arg("-q");
-    #[cfg(unix)]
-    scp.arg("-o")
-        .arg(format!("ControlPath={}", control_path(paths, target).display()))
-        .args(["-o", "ControlMaster=no"]);
-    scp.args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]);
-    scp.arg(scratch.0.join("hc-install.zip")).arg(&script).arg(format!("{target}:"));
-    let to = Reach { target, via: false };
-    let out = scp.output().map_err(|e| unreachable(to, &format!("cannot run scp: {e}")))?;
-    if !out.status.success() {
-        return Err(RpcError::new(
-            "install_failed",
-            format!("copying {CLI_NAME} to {target}: {}", String::from_utf8_lossy(&out.stderr).trim()),
-            "nothing was changed there",
-        ));
-    }
-    // No quotes or $ in it: cmd and PowerShell read it the same.
-    let session = session.map(|s| format!(" {s}")).unwrap_or_default();
-    run_there(
-        paths,
-        to,
-        &format!("powershell -NoProfile -ExecutionPolicy Bypass -File hc-install.ps1 hc-install.zip{session}"),
-        b"",
-    )?;
-    run_there(paths, to, &format!("{WINDOWS_HC} --version"), b"")
-}
-
 #[cfg(test)]
 mod tests {
+    use super::install::platform;
     use super::*;
 
     #[test]
@@ -712,7 +550,7 @@ mod tests {
 
     #[test]
     fn id_shaped_hosts_get_a_free_name() {
-        for host in ["t440s", "t14", &format!("t1{}", "b".repeat(30))] {
+        for host in ["t440s", "t14", &format!("t1{}", "b".repeat(30)), "0123456789abcdef0123456789abcdef"] {
             let expected = format!("{}-2", &host[..host.len().min(30)]);
             assert_eq!(default_name(host, |_| false), Some(expected));
             assert_eq!(
@@ -746,6 +584,42 @@ mod tests {
         let via = args(Reach { target: "fly ssh console -C", via: true }, false);
         assert_eq!(via, ["-c", "fly ssh console -C \"$1\"", "sh", &line]);
         assert_eq!(args(Reach { target: "box", via: false }, true).last().unwrap(), nearshell::WINDOWS_PROBE);
+    }
+
+    #[test]
+    fn a_loaded_name_that_routing_could_mistake_is_renamed_after_its_host() {
+        let core = crate::api::CoreInfo { id: "c0".into(), name: "here".into() };
+        let m = |name: &str, target: &str, id: &str| {
+            serde_json::from_value::<Machine>(json!({"name": name, "target": target, "session": null, "id": id,
+                "host": "h", "version": "v"}))
+            .unwrap()
+        };
+        let hex = "0123456789abcdef0123456789abcdef";
+        let mut machines = vec![
+            m("box", "box", "c1"),
+            m(hex, "can@rohan.lan", "c2"),
+            m("c1", "gondor", "c3"),
+            m("box", "box.lan", "c4"),
+            m("here", "here", "c5"),
+            m("fine", "x", hex),
+        ];
+        let renamed = settle_names(&mut machines, &core);
+        let names: Vec<&str> = machines.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, ["box", "rohan", "gondor", "box-2", "here-2", "fine"]);
+        assert_eq!(renamed.len(), 4);
+        assert_eq!(renamed[0], (hex.to_string(), "rohan".to_string()));
+        assert!(settle_names(&mut machines, &core).is_empty(), "once");
+
+        // As a core starts: renamed, and saved so.
+        let dir = std::env::temp_dir().join(format!("hc-machines-load-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let saved = json!([m(hex, "can@rohan.lan", "c2"), m("box", "box", "c1")]);
+        std::fs::write(dir.join("machines.json"), saved.to_string()).unwrap();
+        let loaded = load(&dir, &core).unwrap();
+        let again: Vec<Machine> = serde_json::from_slice(&std::fs::read(dir.join("machines.json")).unwrap()).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(loaded.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["rohan", "box"]);
+        assert_eq!(again.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["rohan", "box"]);
     }
 
     #[test]

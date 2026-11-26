@@ -29,10 +29,10 @@ mod relay;
 mod run;
 mod view;
 mod viewers;
-pub use mirror::rename_mirror;
 #[cfg(test)]
 use mirror::{mirror_event, mirror_replace};
 use mirror::{mirror_events, mirror_reply};
+pub use mirror::{own_terminals, rename_mirror};
 use run::forward_once;
 pub use view::{MachineView, tell, view, views};
 use viewers::{RESIZE_LOST, lost_line, negotiate_resize, reattach, relay_out};
@@ -553,10 +553,11 @@ pub fn peer_joined(core: &Arc<Core>, conn: &Arc<Conn>, hello: &Value) {
         }
     });
     let mut st = core.lock();
-    // Its name must mean it alone here; else it goes by its id.
+    // Its name must mean it alone here, and not look like an id; else it goes by its id.
     let name = crate::addr::clean_name(name);
     let taken = name == core.info.name
-        || st.machines.iter().any(|m| m.name == name)
+        || crate::addr::id_like(&name)
+        || st.machines.iter().any(|m| m.name == name || m.id == name)
         || st.peers.iter().any(|(other, p)| other != id && p.name == name);
     let peer = st.peers.entry(id.into()).or_default();
     peer.name = if taken { id.into() } else { name };
@@ -921,14 +922,15 @@ pub fn localize(core: &Core, name: &str, aliases: &[&str], v: Value) -> Value {
     localize_in(core, &core.lock(), name, aliases, v)
 }
 
+/// The keys whose strings are terminal addresses, at any depth.
+const ADDRESS_KEYS: [&str; 5] = ["address", "parent", "terminal", "from", "removed"];
+
 fn map_addresses(v: &mut Value, map: &dyn Fn(&str) -> String) {
     match v {
         Value::Object(o) => {
             for (k, v) in o.iter_mut() {
                 match v {
-                    Value::String(s) if ["address", "parent", "terminal", "from", "removed"].contains(&k.as_str()) => {
-                        *s = map(s)
-                    }
+                    Value::String(s) if ADDRESS_KEYS.contains(&k.as_str()) => *s = map(s),
                     _ => map_addresses(v, map),
                 }
             }

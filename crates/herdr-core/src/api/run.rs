@@ -28,7 +28,7 @@ pub(super) async fn terminal_run(core: Ctx<'_>, mut p: RunParams) -> Result<RunR
             p.env.insert(pager.into(), "cat".into());
         }
     }
-    let started = start(core, p, template).await?;
+    let started = start(core, p, template, from_afar(core)).await?;
     let id = started.id();
     let first_message = match first.filter(|text| !text.is_empty()) {
         Some(text) => Some(core.first_message(id, quiet_ready, &text, caller.as_deref()).await),
@@ -89,10 +89,12 @@ pub(crate) fn not_stopping(st: &crate::runtime::State) -> Result<(), RpcError> {
     }
 }
 
+/// `peer`: asked by a core that dialed in (a hub forwarding a run), whoever called it there.
 pub(super) async fn start(
     core: &Arc<Core>,
     p: RunParams,
     template: Option<crate::templates::Template>,
+    peer: bool,
 ) -> Result<Terminal, RpcError> {
     if p.cols == Some(0) || p.rows == Some(0) {
         return Err(RpcError::invalid_params("cols and rows must be between 1 and 65535"));
@@ -122,9 +124,10 @@ pub(super) async fn start(
             (p.cols.unwrap_or(cols), p.rows.unwrap_or(rows))
         }
     };
-    // A caller on another machine has no folder here: home, then.
+    // A caller on another machine has no folder here, and neither has a run
+    // another core forwards without one: home, then (not this core's folder).
     let from_afar = p.caller.as_deref().is_some_and(|c| c.contains('/'));
-    let cwd = crate::exec::folder(p.cwd.as_deref(), from_afar);
+    let cwd = crate::exec::folder(p.cwd.as_deref(), from_afar || peer);
     #[cfg(not(feature = "managed"))]
     let env = child_env(crate::platform::program_env().await, p.env.clone());
     let identity = format!(

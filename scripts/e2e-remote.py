@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """End-to-end check of the Linux remote core over real OpenSSH and a real
-`systemd --user` (see docs/nearshell-build.md). Not part of CI: it needs
+`systemd --user` (see docs/nearshell-remote-e2e.md). Not part of CI: it needs
 Docker (privileged containers running systemd as PID 1) and builds what it
 installs from HEAD of this checkout.
 
@@ -41,9 +41,9 @@ def load(name, file):
     return module
 
 
-remote = load("build_remote", "build-remote.py")
 viewer = load("e2e_remote_viewer", "e2e-remote-viewer.py")
-Failed, ticks, PTY = viewer.Failed, viewer.ticks, viewer.PTY
+flows = load("e2e_remote_flows", "e2e-remote-flows.py")
+Failed, ticks, PTY, flow, HOLD = viewer.Failed, viewer.ticks, viewer.PTY, flows.flow, flows.HOLD
 
 BUNDLE = "com.nearshell.e2e"
 PATCHSET = "e2e"
@@ -153,7 +153,8 @@ def identity_env(commit, seq):
 
 def build(builds, commit, arches, rounds, cache):
     """remote-<n>: product payloads (build-remote.py). test-<n>: nearshell-test
-    payloads and hub-<n>/nhc, a managed-test hub for this Mac (round b)."""
+    payloads (build-remote.py --test) and hub-<n>/nhc, a managed-test hub for
+    this Mac (round b)."""
     triples = sorted({ARCHES[a][0] for a in arches} | ({ARCHES[HUB][0]} if "a" in rounds else set()))
     stamp = builds / "stamp.json"
     want = {"commit": commit, "triples": triples, "rounds": sorted(rounds)}
@@ -165,15 +166,15 @@ def build(builds, commit, arches, rounds, cache):
         shutil.rmtree(old)
     src = clean_clone(builds, commit)
     cache.mkdir(parents=True, exist_ok=True)
+    def payloads(seq, kind, targets, *test):
+        args = ["python3", "-B", src / "scripts/build-remote.py", "--source", src, "--commit", commit,
+                "--patchset", PATCHSET, "--release-seq", seq, "--config", "dev", "--bundle-id", BUNDLE,
+                "--output", builds / f"{kind}-{seq}", "--target-dir", cache / kind, *test]
+        run(args + [a for t in targets for a in ("--target", t)], timeout=3600)
     for seq in (1, 2):
         if "a" in rounds:
             LOG.say(f"builds: remote payloads, release {seq} ({', '.join(triples)})")
-            args = ["python3", "-B", src / "scripts/build-remote.py", "--source", src, "--commit", commit,
-                    "--patchset", PATCHSET, "--release-seq", seq, "--config", "dev", "--bundle-id", BUNDLE,
-                    "--output", builds / f"remote-{seq}", "--target-dir", cache / "remote"]
-            for t in triples:
-                args += ["--target", t]
-            run(args, timeout=3600)
+            payloads(seq, "remote", triples)
         if "b" in rounds:
             LOG.say(f"builds: managed-test hub and nearshell-test payloads, release {seq}")
             env = identity_env(commit, seq)
@@ -183,20 +184,7 @@ def build(builds, commit, arches, rounds, cache):
             hub = builds / f"hub-{seq}"
             hub.mkdir()
             shutil.copy2(mac / "debug/nhc", hub / "nhc")
-            out = builds / f"test-{seq}"
-            out.mkdir()
-            expected = dict(commit=commit, patchset=PATCHSET, releaseSeq=seq,
-                            config=f"dev:{BUNDLE}:remote:scratch-test")
-            entries = []
-            for t in sorted({ARCHES[a][0] for a in arches}):
-                cargo_home = pathlib.Path(env.get("CARGO_HOME") or pathlib.Path.home() / ".cargo")
-                command = remote.cargo_command(t, cache / "test", cargo_home)
-                command[command.index("nearshell")] = "nearshell-test"
-                subprocess_run_in(src, command, env)
-                binary = out / f"nhc-{t}"
-                shutil.copy2(cache / "test" / t / "release/nhc", binary)
-                entries.append(remote.entry(binary, t, expected, False))
-            (out / "manifest.json").write_text(json.dumps(remote.manifest(entries, {}), indent=2) + "\n")
+            payloads(seq, "test", sorted({ARCHES[a][0] for a in arches}), "--test")
     stamp.write_text(json.dumps(want))
 
 
@@ -500,7 +488,8 @@ def marked_scenario(hub, far, term, builds, label):
     LOG.say(f"### {label}: a marked stream while the core there restarts")
     with hub.marked(term) as v:
         at = v.paint(0, "attach", 0)[1]
-        wait_for("it wrote more lines than the screen has", lambda: v.tick() > v.size[1] + 2, timeout=120)
+        # A tick a second: a ticker started just before needs as many seconds as the screen has rows.
+        wait_for("it wrote more lines than the screen has", lambda: v.tick() > v.size[1] + 2, timeout=v.size[1] + 60)
         last = v.newest()
         far.restart()
         at = v.stitched(at, last)
@@ -518,15 +507,18 @@ def marked_scenario(hub, far, term, builds, label):
         check(sum(e["type"] == "gap" for e in v.events()) == 2, "two discontinuities in all, one per lost line")
 
 
-def install_scenario(hub, far, label):
+def install_scenario(hub, far, label, interactive=False):
     LOG.say(f"### {label}: add on an empty account")
     check(far.box.sh(f"test -e /home/{far.user}/.local", check_rc=False)[0] != 0, "the far account has no ~/.local")
-    e = hub.fails("hc_missing", "machine", "add", "far", "--name", "far")
-    LOG.shown("machine add, nothing installed there (--json; in a terminal it asks to install)", json.dumps(e))
-    check(hub.machine("far") is None, "the machine is not added")
-    LOG.say(f"### {label}: add --install")
-    out = hub.human("machine add --install (in a terminal: it also opens the shared ssh login)",
-                    "machine", "add", "far", "--name", "far", "--install")
+    if interactive:
+        out = flows.interactive_add(hub, far, label)
+    else:
+        e = hub.fails("hc_missing", "machine", "add", "far", "--name", "far")
+        LOG.shown("machine add, nothing installed there (--json; in a terminal it asks to install)", json.dumps(e))
+        check(hub.machine("far") is None, "the machine is not added")
+        LOG.say(f"### {label}: add --install")
+        out = hub.human("machine add --install (in a terminal: it also opens the shared ssh login)",
+                        "machine", "add", "far", "--name", "far", "--install")
     check(out["status"] == 0 and "far: installed its remote core (release 1)" in out["output"],
           "it says it installed release 1")
     check(f"sudo loginctl enable-linger -- {far.user}" in out["output"],
@@ -557,10 +549,12 @@ def update_scenario(hub, far, pid, term, builds, label, restart):
     wait_for("far is needs_update", lambda: hub.state("far") == "needs_update", timeout=60)
     hub.human("machine ls, needs_update", "machine", "ls")
     hub.fails("needs_update", "read", term, human="read on a needs_update machine")
-    LOG.say(f"### {label}: machine update")
-    out = hub.human("machine update", "machine", "update", "far")["output"]
-    check("far: updated its remote core from release 1 to 2; its terminals kept running" in out,
-          "it says it updated 1 to 2 and the terminals kept running")
+    LOG.say(f"### {label}: machine update --hold")
+    out = flow(hub, "machine update --hold", [HOLD], "machine", "update", "far", "--hold")
+    flows.has(out, f"finding out what far runs... linux {far.box.arch}\n", "sending the remote core... ",
+              ", arrived\nstarting it there... done\n", "waiting for the line... connected\n",
+              "far: updated its remote core from release 1 to 2; its terminals kept running", "press Enter to close")
+    check(out["status"] == 0, "it exits 0 after Enter")
     m = hub.machine("far")
     check(m["state"] == "connected" and m["build"]["releaseSeq"] == 2, "far is connected on release 2")
     check(far.build_info()["releaseSeq"] == 2, "far's installed nhc is release 2")
@@ -583,16 +577,6 @@ def downgrade_scenario(hub, far, builds, label, restart):
     check(far.build_info()["releaseSeq"] == 2, "far still has release 2")
     hub_onto(hub, 2, builds, label, restart)
     wait_for("far is connected again", lambda: hub.state("far") == "connected", timeout=60)
-
-
-def rm_scenario(hub, far, pid, label):
-    LOG.say(f"### {label}: machine rm")
-    core = far.show(next(u for u in far.units() if u.startswith("nearshell-serve-")), "MainPID")
-    hub.nhc("machine", "rm", "far")
-    check(hub.machine("far") is None, "the hub forgot far")
-    time.sleep(1)
-    check(far.alive(core) and far.alive(pid), f"far's core ({core}) and its terminal ({pid}) still run")
-    check(far.build_info()["releaseSeq"] == 2, "far's files are where they were")
 
 
 # --- round a -------------------------------------------------------------------------------
@@ -648,6 +632,7 @@ def round_a(work, builds, arch, keys):
     LOG.say(f"  far: account home {home}, an ssh session's $HOME {seen}")
     check(home == seen, "sshd gives the session the account database's home")
 
+    stream = flows.Follower(hub, work / f"events-{label.replace('/', '-')}.jsonl")
     install_scenario(hub, far, label)
     m = hub.machine("far")
     LOG.say(f"  far keeps_running_after_logout={m.get('keeps_running_after_logout')} "
@@ -659,7 +644,7 @@ def round_a(work, builds, arch, keys):
     LOG.say(f"### {label}: every login there ends, no linger")
     linger = far_box.sh("ls /var/lib/systemd/linger 2>/dev/null || true")[1].split()
     check("far" not in linger, "far has no linger (it cannot enable it itself: no polkit)")
-    logout(hub, far)
+    flows.logout(hub, far)
     gone = wait_for("far's user manager stops", lambda: far_box.sh(
         "loginctl show-user far", check_rc=False)[0] != 0, timeout=60)
     LOG.say(f"  far/ticker {'still runs' if far.alive(pid) else 'ended'}; far processes: "
@@ -680,7 +665,7 @@ def round_a(work, builds, arch, keys):
     far.check_services(far_socket, f"dev:{BUNDLE}:remote")
 
     LOG.say(f"### {label}: every login there ends, with linger")
-    logout(hub, far)
+    flows.logout(hub, far)
     time.sleep(15)  # logind's UserStopDelaySec is 10 s
     user = far_box.sh("loginctl show-user far -p State -p Sessions")[1].split()
     check("State=lingering" in user and "Sessions=" in user, f"far: {user}")
@@ -690,72 +675,19 @@ def round_a(work, builds, arch, keys):
     check(hub.json("get", "far/ticker2")["pid"] == pid, "the hub sees the same far/ticker")
 
     downgrade_scenario(hub, far, builds, label, restart)
-    rm_scenario(hub, far, pid, label)
-    side_checks(hub, far_box, far, far_socket, label)
+    flows.rm_scenario(hub, far, pid, label, stream)
+    flows.check_stream(stream.stop(), label)
+    known = hub_box.sh("cat /home/hub/.ssh/known_hosts", user="hub")[1].encode()
+    flows.trust_scenario(
+        hub, far, label, ask=False,
+        forget=lambda: hub_box.sh(f"ssh-keygen -q -R {far_box.name} -f /home/hub/.ssh/known_hosts", user="hub"),
+        restore=lambda: hub_box.put(known, "/home/hub/.ssh/known_hosts", "hub"),
+        end_logins=lambda: hub_box.sh(f'for m in /tmp/nearshell-1000-{SHA8}/ssh-*; do [ -S "$m" ] && '
+                                      'ssh -S "$m" -O exit far; done; true', user="hub"))
+    flows.side_checks(hub, far_box, far, far_socket, label)
     far.user_sh(f"{far.root}/bin/nhc server stop", check_rc=False)
     hub.nhc("server", "stop", check_rc=False)
     teardown_docker()
-
-
-def logout(hub, far):
-    """Ends the hub's logins there: the shared ssh login (`machine add` in a
-    terminal opened it) and the core's line (the hub core stops)."""
-    hub.box.sh(f'for m in /tmp/nearshell-1000-{SHA8}/ssh-*; do [ -S "$m" ] && ssh -S "$m" -O exit far; done; true',
-               user="hub")
-    hub.nhc("server", "stop")
-    wait_for("far has no login session", lambda: not far.box.sh(
-        f"loginctl list-sessions --no-legend | awk '$3 == \"{far.user}\"'")[1].strip(), timeout=30)
-
-
-def side_checks(hub, box, far, far_socket, label):
-    """§8 of the design: $HOME unlike the account's, a socket directory taken
-    by another account, and /tmp cleaners against the live socket."""
-    LOG.say(f"### {label}: an ssh session whose $HOME is not the account's")
-    e = hub.fails("hc_missing", "machine", "add", "odd", "--name", "odd")
-    LOG.shown("machine add, $HOME moved (--json)", json.dumps(e))
-    hub.fails("invalid_params", "machine", "add", "odd", "--name", "odd", "--install",
-              human="add --install, $HOME moved")
-    left = box.sh(f"ls -A /home/odd/elsewhere/.local/share/nearshell/{BUNDLE}/bin; "
-                  "ls -A /home/odd/.local 2>&1 || true")[1]
-    LOG.say(f"  odd: {left.strip()}")
-    check(".nhc.new" not in left, "no temp copy is left where the session's $HOME pointed")
-    LOG.say(f"### {label}: another account took the socket directory first")
-    taken_uid = box.uid("taken")
-    box.sh(f"install -d -m 700 -o mallory /tmp/nearshell-{taken_uid}-{SHA8}")
-    err = hub.fails("nearshell_socket_dir", "machine", "add", "taken", "--name", "taken", "--install",
-                    human="add --install, socket directory taken")
-    LOG.raw(json.dumps(err))
-    LOG.say("  taken: " + box.sh(f"ls -A /home/taken/.local/share/nearshell/{BUNDLE}/bin 2>&1 || true")[1].strip())
-    LOG.say(f"### {label}: /tmp cleaners and the live socket")
-    sockdir = str(pathlib.PurePosixPath(far_socket).parent)
-    LOG.say("  " + box.sh(f"ls -la --time-style=+ {sockdir}")[1].replace("\n", "\n  "))
-    # Decoys: an old file and an old socket nothing listens on.
-    decoys = ("echo old > /tmp/e2e-stale && "
-              "python3 -c 'import socket; socket.socket(socket.AF_UNIX).bind(\"/tmp/e2e-dead.sock\")'"
-              f" && find {sockdir} /tmp/e2e-stale /tmp/e2e-dead.sock -exec touch -h -d '30 days ago' {{}} +")
-    stale = f"for f in /tmp/e2e-stale /tmp/e2e-dead.sock; do test -e $f && echo left:$f; done; ls -A {sockdir}"
-    box.sh(decoys)
-    # Fedora's and Arch's rule (Debian's tmp.conf has no age). touch cannot age
-    # ctime, so the rule ages by atime and mtime only (systemd >= 250).
-    box.sh("printf 'q /tmp 1777 root root am:10d\\n' > /etc/tmpfiles.d/tmp.conf && systemd-tmpfiles --clean; "
-           "rm /etc/tmpfiles.d/tmp.conf")
-    left = box.sh(stale)[1]
-    check("left:" not in left and "c.sock" in left, "systemd-tmpfiles with a 10d age on /tmp removes an old file and "
-          f"an old dead socket, keeps the live sockets and their directory ({left.split()})")
-    check(far.user_sh(f"{far.root}/bin/nhc --json server status", check_rc=False)[0] == 0, "far's core still answers")
-    box.sh(f"rm -f /tmp/e2e-stale /tmp/e2e-dead.sock; {decoys} && tmpreaper 7d /tmp")
-    left = box.sh(stale)[1]
-    check("left:/tmp/e2e-stale" not in left and "c.sock" in left,
-          f"tmpreaper 7d /tmp (Debian's default file types) removes the old file, keeps sockets ({left.split()})")
-    box.sh(f"rm -f /tmp/e2e-stale /tmp/e2e-dead.sock; {decoys} && tmpreaper --all 7d /tmp")
-    left = box.sh(f"ls -A {sockdir} 2>&1 || true")[1]
-    LOG.say(f"  after tmpreaper --all: {left.strip() or 'empty'}")
-    if "c.sock" not in left:
-        rc, _, err = far.user_sh(f"{far.root}/bin/nhc --json server status", check_rc=False)
-        check(rc != 0 and error_kind(err) == "nearshell_socket_lost", "the core there reports nearshell_socket_lost")
-        LOG.shown("nhc on the far end after its socket was removed", far.user_sh(
-            f"{far.root}/bin/nhc server status", check_rc=False)[2])
-        box.sh("pkill -u far -f 'nhc serve' || true")
 
 
 # --- round b -----------------------------------------------------------------------------
@@ -771,19 +703,20 @@ def round_b(work, builds, arch, keys):
     box.account("far", keys["client"].with_suffix(".pub").read_bytes())
     # A test build takes its root from NEARSHELL_HC_TEST_ROOT: sshd sets it to
     # the path the dial line uses.
-    box.sshd(keys[f"host-{arch}"], f"Match User far\n    SetEnv NEARSHELL_HC_TEST_ROOT={far_root}\n")
+    box.sshd(keys[f"host-{arch}"], "".join(f"Match User {u}\n    SetEnv NEARSHELL_HC_TEST_ROOT=/home/{u}/.local/share/"
+                                           f"nearshell/{BUNDLE}\n" for u in ("far", "far2")))
     far = Far(box, "far", far_root, "test", f"NEARSHELL_HC_TEST_ROOT={far_root} ")
     port = box.port()
     # This Mac's side: a scratch ssh config, key and known_hosts; `ssh` on the
     # hub's PATH is /usr/bin/ssh reading only that config.
     b = pathlib.Path(tempfile.mkdtemp(prefix="ne2e-", dir="/var/tmp"))
     try:
-        host_pub = keys[f"host-{arch}"].with_suffix(".pub").read_text().split()
-        (b / "known_hosts").write_text(f"[127.0.0.1]:{port} {host_pub[0]} {host_pub[1]}\n")
+        # No host key known yet: a person accepts it (ssh asks).
+        (b / "known_hosts").write_text("")
         (b / "ssh_config").write_text(
             f"Host far\n  HostName 127.0.0.1\n  Port {port}\n  User far\n  IdentityFile {keys['client']}\n"
             f"  IdentitiesOnly yes\n  IdentityAgent none\n  UserKnownHostsFile {b}/known_hosts\n"
-            "  GlobalKnownHostsFile /dev/null\n  StrictHostKeyChecking yes\n  UpdateHostKeys no\n"
+            "  GlobalKnownHostsFile /dev/null\n  StrictHostKeyChecking ask\n  UpdateHostKeys no\n"
             "  PasswordAuthentication no\n  KbdInteractiveAuthentication no\n")
         shim = b / "shim"
         shim.mkdir()
@@ -805,7 +738,13 @@ def round_b(work, builds, arch, keys):
             hub.owner("server", "start")
 
         try:
-            b_scenario(hub, far, root, builds, label, restart)
+            b_scenario(hub, far, root, builds, label, restart, work)
+
+            def end_logins():
+                for m in (root / "run").glob("ssh-*"):
+                    run(["/usr/bin/ssh", "-F", b / "ssh_config", "-S", m, "-O", "exit", "far"], check_rc=False)
+            flows.trust_scenario(hub, far, label, lambda: (b / "known_hosts").write_text(""), None, end_logins, True)
+            flows.agent_scenario(hub, box, b, port, keys, label)
         finally:
             if (root / "run/c.sock").exists():
                 run([hub.binary, "--owner-token", hub.token, "server", "stop"], env=hub.env, check_rc=False)
@@ -822,10 +761,11 @@ def round_b(work, builds, arch, keys):
         teardown_docker()
 
 
-def b_scenario(hub, far, root, builds, label, restart):
+def b_scenario(hub, far, root, builds, label, restart, work):
     hub_onto(hub, 1, builds, label, restart)
     check(hub.json("server", "status")["build"]["config"] == f"dev:{BUNDLE}:scratch-test", "the hub is managed-test")
-    install_scenario(hub, far, label)
+    stream = flows.Follower(hub, work / f"events-{label.replace('/', '-')}.jsonl")
+    install_scenario(hub, far, label, interactive=True)
     LOG.say(f"### {label}: machine login (the shared ssh login)")
     out = hub.human("machine login", "machine", "login", "far")
     check(out["status"] == 0, "machine login succeeds")
@@ -836,8 +776,9 @@ def b_scenario(hub, far, root, builds, label, restart):
     far.check_services(f"{far.root}/run/c.sock", f"dev:{BUNDLE}:remote:scratch-test")
     update_scenario(hub, far, pid, "far/ticker", builds, label, restart)
     downgrade_scenario(hub, far, builds, label, restart)
-    rm_scenario(hub, far, pid, label)
+    flows.rm_scenario(hub, far, pid, label, stream)
     check(not list((root / "run").glob("ssh-*")), "machine rm ended the shared login")
+    flows.check_stream(stream.stop(), label)
 
 
 # --- main ------------------------------------------------------------------------------------
@@ -859,6 +800,7 @@ def main():
     parser.add_argument("--remove-images", action="store_true", help="drop the nhc-e2e images at the end")
     args = parser.parse_args()
     rounds = args.round or (["a", "b"] if platform.system() == "Darwin" else ["a"])
+    flows.bind(sys.modules[__name__])
     arches = args.arch or [HUB]
     work = args.work.absolute()
     if work.exists() and any(p.name not in ("builds",) for p in work.iterdir()):

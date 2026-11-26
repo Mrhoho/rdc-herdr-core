@@ -50,6 +50,10 @@ Then `hc machine add box` is enough. The same targets work in Herdr's add-machin
 
 Without `--name`, the first host label becomes its name (IPs stay whole), shortened to 32 characters.
 Names that are taken or look like terminal ids get a numbered suffix: `t14` becomes `t14-2`.
+A name is never 32 hex digits, which is what a machine's id looks like, so an address always says which machine it means:
+add and rename refuse such a name or another machine's id, and a host named that way gets a suffix too.
+A saved machine with a name like that (from an older hc) is renamed after its host when the core starts, and the core logs it.
+`hc machine login`, `update`, `rename` and `rm` take the machine's id as well as its name; the id stays when it is renamed.
 
 The other machine needs hc. In an interactive terminal, add asks before copying hc there if it is missing or too old to talk to.
 For a script, `hc machine add user@host --name box --install` allows that copy without asking.
@@ -57,6 +61,22 @@ When the OS and CPU match, it copies your current build. Otherwise it uses this 
 
 SSH passwords, codes, and host-key prompts need a person at a terminal.
 On Windows, use SSH keys or an SSH agent; hc does not share interactive password logins there.
+
+In a terminal, `hc machine add` without a target asks for one, then for a name (Enter takes the one it offers);
+an answer it cannot take is asked again. Adding, `hc machine login` and `hc machine update` show each step
+on its own line as it starts and ends: logging in, finding out what runs there, sending the copy (how much of it,
+rewritten in place), starting it there, waiting for the line. The last line says what this core's line to the
+machine reached, `connected`, or an error naming the state with what to do about it. `--hold` then waits for Enter
+and exits with the same status, for a terminal opened only to run it; without a terminal it does not wait.
+Piped or with `--json`, these commands print what they always printed.
+
+The ssh login is shared: this core's connections ride the one a terminal opened, so they reach a machine even when
+only that terminal has the key (an ssh agent in its `SSH_AUTH_SOCK`, say). Once that login ends, the core logs in
+on its own; when it cannot, the machine shows `needs_login`.
+
+A copy there gives up a link silent for a minute, and stops after a limit: a minute for each short command,
+two minutes plus its size at 16 kB/s for the copy itself (`install_timeout`). Nothing is replaced there unless
+the whole copy arrived. Ctrl+C or closing the terminal ends the copy and what it started there.
 
 To reach a separate core session on the same host:
 

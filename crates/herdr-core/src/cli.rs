@@ -217,18 +217,29 @@ pub fn main() -> i32 {
         cmd => (cmd, cli.json),
     };
     let json = asked || piped;
+    if let Some(e) = machine::target_missing(&cmd, json, &args) {
+        match e.use_stderr() && json {
+            true => return fail(&RpcError::new("usage", usage_message(&e), format!("see `{CLI_NAME} --help`")), true),
+            false => e.exit(),
+        }
+    }
+    let hold = matches!(&cmd, Some(Cmd::Machine { action }) if action.holds());
     #[cfg(feature = "managed")]
     let owner_token = cli.owner_token.as_deref();
     #[cfg(not(feature = "managed"))]
     let owner_token = None;
-    match run(cmd, json, asked, owner_token) {
+    let code = match run(cmd, json, asked, owner_token) {
         Ok(Some(out)) => {
             print(&out, json);
             0
         }
         Ok(None) => 0,
         Err(err) => fail(&err, json),
+    };
+    if hold {
+        machine::hold();
     }
+    code
 }
 
 /// Clap's diagnostic without its usage footer, on one line: what is wrong and
@@ -708,7 +719,7 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool, _owner_token: Option<&str>) ->
             }
         }
         Cmd::Update { from: Some(from), force, .. } => update(&paths, &from, force)?,
-        Cmd::Machine { action } => machine(&paths, action, call)?,
+        Cmd::Machine { action } => machine(&paths, action, json, call)?,
         Cmd::File { action } => match file(action, asked, call)? {
             Some(out) => out,
             None => return Ok(None),

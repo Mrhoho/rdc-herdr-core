@@ -14,6 +14,23 @@ pub fn check_name(name: &str) -> Result<(), RpcError> {
     Ok(())
 }
 
+/// What a core id looks like: 32 hex digits. Routing takes a machine's name or
+/// its id, so a machine name must never look like one.
+pub fn id_like(name: &str) -> bool {
+    name.len() == 32 && name.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// A machine's name: a name (above) that does not look like a core id.
+pub fn check_machine_name(name: &str) -> Result<(), RpcError> {
+    check_name(name)?;
+    match id_like(name) {
+        true => Err(RpcError::invalid_params(format!(
+            "bad name {name:?}: 32 hex digits look like a machine's id; pick another"
+        ))),
+        false => Ok(()),
+    }
+}
+
 /// Something a machine calls itself (its hostname) as a valid name.
 pub fn clean_name(raw: &str) -> String {
     let lower: String = raw
@@ -60,6 +77,17 @@ mod tests {
         }
         assert_eq!(clean_name("Can's MacBook Pro"), "can-s-macbook-pro");
         assert_eq!(clean_name("--"), "local");
+    }
+
+    #[test]
+    fn a_machine_name_never_looks_like_a_core_id() {
+        let id = "0123456789abcdef0123456789abcdef";
+        assert!(id_like(id) && check_name(id).is_ok(), "a name otherwise");
+        assert_eq!(check_machine_name(id).unwrap_err().kind, "invalid_params");
+        for good in ["rohan", &"z".repeat(32), &id[..31], &format!("{}g", &id[..31]), "0123456789abcdef-2"] {
+            assert!(check_machine_name(good).is_ok(), "{good}");
+        }
+        assert!(check_machine_name("t7").is_err() && check_machine_name(&"a".repeat(32)).is_err());
     }
 
     #[test]

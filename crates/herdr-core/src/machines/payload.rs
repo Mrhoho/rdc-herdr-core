@@ -169,7 +169,8 @@ pub fn parse_expect(arg: &str) -> Option<BuildInfo> {
 
 /// The line that takes `bytes` bytes on stdin into a private temp file in the
 /// remote core's own bin folder, checks they all came, and runs that copy to
-/// put itself in place (hidden `install`). Only `<root>/bin` is written: no
+/// put itself in place (hidden `install`); in between it says it arrived
+/// (`ARRIVED`, before the result's line). Only `<root>/bin` is written: no
 /// `hc` link, nothing in ~/.local/bin. The temp file goes on every way out
 /// (once in place it is gone already); stale ones of failed attempts are
 /// removed by a later install, under its lock. No single quote or backslash in
@@ -179,9 +180,10 @@ pub fn install_line(bundle: &str, bytes: u64, expect: &BuildInfo) -> String {
         "umask 077; unset HC_SESSION HC_SOCKET; d=\"{root}/bin\"; mkdir -p \"$d\" || exit 2; \
          t=\"$d/{staged}$$\"; c() {{ rm -f \"$t\"; }}; trap c EXIT; trap \"exit 1\" HUP INT TERM; \
          head -c {bytes} > \"$t\"; [ $(($(wc -c < \"$t\"))) -eq {bytes} ] || {{ echo \"{INCOMPLETE}\" >&2; exit 3; }}; \
-         chmod 700 \"$t\" && \"$t\" --json install --from \"$t\" --expect {expect}",
+         echo {arrived}; chmod 700 \"$t\" && \"$t\" --json install --from \"$t\" --expect {expect}",
         root = super::nearshell::remote_root(bundle),
         staged = crate::branding::STAGED_PREFIX,
+        arrived = super::ARRIVED,
         expect = expect_arg(expect),
     );
     format!("sh -c '{script}'")
@@ -343,6 +345,7 @@ mod tests {
         assert!(script.contains(&format!("t=\"$d/{}$$\"", crate::branding::STAGED_PREFIX)));
         assert!(script.contains("head -c 123 > \"$t\"; [ $(($(wc -c < \"$t\"))) -eq 123 ] || "));
         assert!(script.contains("trap c EXIT; trap \"exit 1\" HUP INT TERM;"));
+        assert!(script.contains(&format!("exit 3; }}; echo {}; chmod 700", super::super::ARRIVED)), "{script}");
         let tail = "\"$t\" --json install --from \"$t\" --expect ";
         let expect = &script[script.find(tail).unwrap() + tail.len()..];
         assert_eq!(parse_expect(expect), Some(b), "the patchset's quotes survive as hex");

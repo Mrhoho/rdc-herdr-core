@@ -830,7 +830,8 @@ pub struct FileResult {
 #[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
 pub struct MachineAddParams {
     /// How ssh reaches it: `vps`, `can@10.0.0.7`, `can@10.0.0.7:2222`, a Host from ~/.ssh/config.
-    #[arg(required_unless_present = "via", conflicts_with = "via")]
+    /// Needed unless --via; a person in a terminal is asked for it.
+    #[arg(conflicts_with = "via")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
     /// Reach it with this command instead of ssh: it is given a shell line to
@@ -855,6 +856,12 @@ pub struct MachineAddParams {
     #[serde(skip)]
     #[schemars(skip)]
     pub install: bool,
+    /// After the outcome, wait for Enter before exiting (same exit status).
+    /// Only in a terminal: without one it exits at once.
+    #[arg(long)]
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub hold: bool,
     /// What to call it here (default: the target's host).
     #[arg(long)]
     pub name: Option<String>,
@@ -866,13 +873,13 @@ pub struct MachineAddParams {
 
 #[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
 pub struct MachineParams {
-    /// The machine's name.
+    /// The machine's name, or its id (which stays when it is renamed).
     pub machine: String,
 }
 
 #[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
 pub struct MachineRenameParams {
-    /// The machine's name now.
+    /// The machine's name now, or its id.
     pub machine: String,
     /// Its new name. Addresses with the old one stop working.
     pub new_name: String,

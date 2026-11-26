@@ -201,3 +201,27 @@ unsafe fn resume(pid: u32) -> usize {
     }
     resumed
 }
+
+/// A child of the CLI started on its own: a console's Ctrl+C reaches it as it
+/// reaches the CLI, and nothing else asks for a group here.
+pub fn own_group(_: &mut std::process::Command) {}
+
+/// Ends a child started with `own_group`.
+pub fn end_group(child: &mut std::process::Child) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// Windows delivers Ctrl+C to every process on the console, the child too:
+/// nothing to note in between.
+pub struct Interrupts;
+
+impl Interrupts {
+    pub fn catch() -> Interrupts {
+        Interrupts
+    }
+
+    pub fn caught(&self) -> bool {
+        false
+    }
+}

@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Build locked remote nhc payloads for Linux (see docs/nearshell-build.md): one
 static musl binary per target and the manifest a hub installs from (its
-`remote_payloads` directory), cross-compiled on macOS or native on Linux."""
+`remote_payloads` directory), cross-compiled on macOS or native on Linux.
+With --test: nearshell-test payloads for test far ends, which only a
+managed-test hub takes (never shipped)."""
 import argparse
 import hashlib
 import importlib.util
@@ -25,18 +27,20 @@ TARGETS = {"x86_64-unknown-linux-musl": "x86_64", "aarch64-unknown-linux-musl": 
 CARGO = "/nearshell/cargo"
 
 
-def expected_build(commit, patchset, release_seq, config, bundle_id):
-    return dict(commit=commit, patchset=patchset, releaseSeq=release_seq, config=f"{config}:{bundle_id}:remote")
+def expected_build(commit, patchset, release_seq, config, bundle_id, test=False):
+    suffix = ":scratch-test" if test else ""
+    return dict(commit=commit, patchset=patchset, releaseSeq=release_seq,
+                config=f"{config}:{bundle_id}:remote{suffix}")
 
 
-def cargo_command(triple, target_dir, cargo_home):
+def cargo_command(triple, target_dir, cargo_home, feature="nearshell"):
     """rustc's own rust-lld (no extra toolchain), a GNU build id as CI's native
     links have, and Cargo's home remapped: on one kind of host the bytes do not
     depend on the folder they were built in (a macOS cross build and a native
     Linux build still differ: rust-lld's own comment and string order). Stable
     flags keep a cache."""
     flags = ["-C", "link-arg=--build-id=sha1", f"--remap-path-prefix={cargo_home}={CARGO}"]
-    return ["cargo", "build", "--locked", "--release", "--no-default-features", "--features", "nearshell",
+    return ["cargo", "build", "--locked", "--release", "--no-default-features", "--features", feature,
             "-p", "herdr-core", "--bin", "nhc", "--target", triple, "--target-dir", str(target_dir),
             "--config", f'target.{triple}.linker="rust-lld"',
             "--config", f"target.{triple}.rustflags={json.dumps(flags)}"]
@@ -79,7 +83,13 @@ def main():
                         help="repeat for each target the payload directory holds")
     parser.add_argument("--output", required=True, type=pathlib.Path)
     parser.add_argument("--target-dir", type=pathlib.Path, help="optional reusable Cargo cache (not a source tree)")
+    parser.add_argument("--test", action="store_true",
+                        help="nearshell-test payloads (dev only): the far end needs NEARSHELL_HC_TEST_ROOT, "
+                             "and only a managed-test hub takes them")
     args = parser.parse_args()
+    if args.test and args.config != "dev":
+        raise ValueError("--test payloads are dev builds: a release payload is never a test build")
+    feature = "nearshell-test" if args.test else "nearshell"
     managed.validate_build(args.commit, args.patchset, args.release_seq, args.config, args.bundle_id)
     if platform.system() not in ("Darwin", "Linux"):
         raise ValueError("the remote build is made on macOS (cross) or Linux")
@@ -91,7 +101,7 @@ def main():
         raise ValueError("output must be outside the source checkout")
     trees = managed.source_trees(source, args.commit)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    expected = expected_build(args.commit, args.patchset, args.release_seq, args.config, args.bundle_id)
+    expected = expected_build(args.commit, args.patchset, args.release_seq, args.config, args.bundle_id, args.test)
     # Do not inherit RUSTFLAGS, alternate linkers, feature flags or build identity.
     keep = ("PATH", "HOME", "TMPDIR", "CARGO_HOME", "RUSTUP_HOME", "RUSTUP_TOOLCHAIN", "ZIG")
     env = {k: os.environ[k] for k in keep if k in os.environ}
@@ -110,7 +120,7 @@ def main():
         entries = []
         with managed.cache_lock(target):
             for triple in sorted(set(args.target)):
-                managed.run(cargo_command(triple, target, cargo_home), cwd=src, env=env)
+                managed.run(cargo_command(triple, target, cargo_home, feature), cwd=src, env=env)
                 binary = product / f"nhc-{triple}"
                 binary.write_bytes((target / triple / "release/nhc").read_bytes())
                 binary.chmod(0o755)
@@ -130,7 +140,7 @@ def main():
                                     "cargo": managed.output(["cargo", "--version"], env=env),
                                     "zig": managed.output([env.get("ZIG", "zig"), "version"], env=env),
                                     "host": f"{platform.system()} {platform.machine()}"},
-                      "profile": {"name": "release", "strip": "symbols", "features": ["nearshell"],
+                      "profile": {"name": "release", "strip": "symbols", "features": [feature],
                                   "linker": "rust-lld", "buildId": "sha1", "remap": [CARGO]}}
         (product / "manifest.json").write_text(json.dumps(manifest(entries, provenance), indent=2) + "\n")
         product.rename(dest)

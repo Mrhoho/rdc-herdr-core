@@ -352,9 +352,13 @@ async fn terminal_list(core: Ctx<'_>, p: ListParams) -> Result<ListResult, RpcEr
             })
         })
         .collect();
-    for ask in asks {
+    for (m, ask) in machines.iter().zip(asks) {
         if let Ok(Some(r)) = ask.await {
-            terminals.extend(r["terminals"].as_array().cloned().unwrap_or_default());
+            terminals.extend(crate::remote::own_terminals(
+                core,
+                m,
+                r["terminals"].as_array().cloned().unwrap_or_default(),
+            ));
             hidden_finished += r["hidden_finished"].as_u64().unwrap_or(0) as usize;
         }
     }
@@ -673,8 +677,8 @@ async fn events_subscribe(core: Ctx<'_>, p: SubscribeParams) -> Result<Subscribe
 
 /// A machine name that is free: valid, not another machine's, not this core's own.
 fn free_name(core: &Core, st: &crate::runtime::State, name: &str) -> Result<(), RpcError> {
-    crate::addr::check_name(name)?;
-    if name == core.info.name || name == core.info.id || st.machines.iter().any(|m| m.name == name) {
+    crate::addr::check_machine_name(name)?;
+    if name == core.info.name || name == core.info.id || st.machines.iter().any(|m| m.name == name || m.id == name) {
         return Err(RpcError::new(
             "name_taken",
             format!("{name:?} is already a machine here"),
@@ -682,6 +686,14 @@ fn free_name(core: &Core, st: &crate::runtime::State, name: &str) -> Result<(), 
         ));
     }
     Ok(())
+}
+
+/// The machine a name or its id names (the id stays when it is renamed).
+fn machine_at(st: &crate::runtime::State, key: &str) -> Result<usize, RpcError> {
+    st.machines
+        .iter()
+        .position(|m| m.name == key || m.id == key)
+        .ok_or_else(|| crate::machines::unknown(&st.machines, key))
 }
 
 async fn machine_add(core: Ctx<'_>, p: MachineAddParams) -> Result<crate::machines::Machine, RpcError> {
@@ -762,11 +774,7 @@ async fn machine_list(core: Ctx<'_>, _: Empty) -> Result<MachineListResult, RpcE
 async fn machine_connect(core: Ctx<'_>, p: MachineParams) -> Result<crate::remote::MachineView, RpcError> {
     let m = {
         let st = core.lock();
-        st.machines
-            .iter()
-            .find(|m| m.name == p.machine)
-            .cloned()
-            .ok_or_else(|| crate::machines::unknown(&st.machines, &p.machine))?
+        st.machines[machine_at(&st, &p.machine)?].clone()
     };
     let connected = matches!(core.lock().lines.get(&m.id), Some(crate::remote::LineState::Connected(_)));
     if !connected {
@@ -778,18 +786,14 @@ async fn machine_connect(core: Ctx<'_>, p: MachineParams) -> Result<crate::remot
 
 async fn machine_rename(core: Ctx<'_>, p: MachineRenameParams) -> Result<crate::machines::Machine, RpcError> {
     let mut st = core.lock();
-    let i = st
-        .machines
-        .iter()
-        .position(|m| m.name == p.machine)
-        .ok_or_else(|| crate::machines::unknown(&st.machines, &p.machine))?;
-    if p.new_name != p.machine {
+    let i = machine_at(&st, &p.machine)?;
+    let (id, old) = (st.machines[i].id.clone(), st.machines[i].name.clone());
+    if p.new_name != old {
         free_name(core, &st, &p.new_name)?;
     }
-    let id = st.machines[i].id.clone();
     st.machines[i].name = p.new_name.clone();
-    if p.new_name != p.machine {
-        crate::remote::rename_mirror(core, &mut st, &id, &p.machine, &p.new_name);
+    if p.new_name != old {
+        crate::remote::rename_mirror(core, &mut st, &id, &old, &p.new_name);
     }
     crate::machines::save(&core.paths.state, &st.machines);
     Ok(st.machines[i].clone())
@@ -797,11 +801,7 @@ async fn machine_rename(core: Ctx<'_>, p: MachineRenameParams) -> Result<crate::
 
 async fn machine_rm(core: Ctx<'_>, p: MachineParams) -> Result<RemoveResult, RpcError> {
     let mut st = core.lock();
-    let i = st
-        .machines
-        .iter()
-        .position(|m| m.name == p.machine)
-        .ok_or_else(|| crate::machines::unknown(&st.machines, &p.machine))?;
+    let i = machine_at(&st, &p.machine)?;
     let gone = st.machines.remove(i);
     crate::remote::forget(core, &mut st, &gone.id);
     crate::machines::save(&core.paths.state, &st.machines);

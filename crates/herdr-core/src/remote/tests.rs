@@ -707,8 +707,15 @@ impl Attached {
 }
 
 impl Drop for Attached {
+    /// The core's registry writer may still land a snapshot while the root is
+    /// removed (the removal then finds it not empty): try again for a while.
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.root);
+        let start = std::time::Instant::now();
+        while std::fs::remove_dir_all(&self.root).is_err_and(|e| e.kind() != std::io::ErrorKind::NotFound)
+            && start.elapsed() < Duration::from_secs(5)
+        {
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 }
 

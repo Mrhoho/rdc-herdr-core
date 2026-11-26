@@ -4,7 +4,7 @@
 //! what the copy reports after it put itself in place there.
 
 use super::payload::{self, Landed};
-use super::{Reach, last_line, nearshell, run_raw};
+use super::{Reach, Stage, last_line, nearshell, run_raw};
 use crate::api::BuildInfo;
 use crate::branding::COMMAND as CLI_NAME;
 use crate::paths::Paths;
@@ -12,9 +12,10 @@ use crate::rpc::RpcError;
 use serde_json::json;
 use std::path::PathBuf;
 
-/// Installs, updates or confirms the remote core there. The caller dials it
-/// again: an install proves the copy runs there, not that the hub accepts it.
-pub fn deliver(paths: &Paths, to: Reach) -> Result<Landed, RpcError> {
+/// Installs, updates or confirms the remote core there, telling `watch` how it
+/// gets on. The caller dials it again: an install proves the copy runs there,
+/// not that the hub accepts it.
+pub fn deliver(paths: &Paths, to: Reach, watch: &mut dyn FnMut(Stage)) -> Result<Landed, RpcError> {
     super::check_target(to)?;
     let here = crate::api::build_info();
     same_as_core(paths, &here)?;
@@ -28,7 +29,8 @@ pub fn deliver(paths: &Paths, to: Reach) -> Result<Landed, RpcError> {
         )
     })?;
     let entries = payload::entries(&manifest, &shown)?;
-    let probe = run_raw(paths, to, "uname -sm", b"")?;
+    watch(Stage::Probing);
+    let probe = run_raw(paths, to, "uname -sm", b"", watch)?;
     if !probe.status.success() {
         return Err(RpcError::new(
             "install_failed",
@@ -37,6 +39,7 @@ pub fn deliver(paths: &Paths, to: Reach) -> Result<Landed, RpcError> {
         ));
     }
     let platform = super::platform(&last_line(&probe.stdout));
+    watch(Stage::Platform(&platform));
     let target = payload::target(&platform).ok_or_else(|| payload::unsupported(to.target, &platform))?;
     // Built for this hub: this binary's own release, as a remote core.
     let expected = BuildInfo { config: nearshell::expected_remote(&here.config), ..here };
@@ -46,7 +49,7 @@ pub fn deliver(paths: &Paths, to: Reach) -> Result<Landed, RpcError> {
     payload::check(&entry, bytes.as_deref(), &file.display().to_string())?;
     let bytes = bytes.unwrap_or_default();
     let line = payload::install_line(nearshell::BUNDLE, bytes.len() as u64, &entry.build);
-    let out = run_raw(paths, to, &line, &bytes)?;
+    let out = run_raw(paths, to, &line, &bytes, watch)?;
     let landed = payload::landed(to.target, out.status.success(), &last_line(&out.stdout), &last_line(&out.stderr))?;
     if landed.build != entry.build {
         return Err(RpcError::new(

@@ -130,7 +130,7 @@ managed-release *args:
 remote-check:
     sh scripts/check-remote.sh
 
-# The remote core end to end over real ssh and systemd in Docker (not CI); see docs/nearshell-build.md.
+# The remote core end to end over real ssh and systemd in Docker (not CI); see docs/nearshell-remote-e2e.md.
 [unix]
 [positional-arguments]
 remote-e2e *args:

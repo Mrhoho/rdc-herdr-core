@@ -1,6 +1,6 @@
 # Nearshell 构建与 CLI 契约
 
-状态：A1–A5 已实现；Linux 远端构建（寻址、生命周期、程序环境、`build-remote.py`）已实现；拨号与版本校验已实现；远端安装与更新（`remote_payloads`、`machine add --install`、`machine update`）已实现，由 Linux 测试与 macOS 脚本化对端验证，并由[端到端脚本](#机器端到端真实-ssh-与-systemd)在 Debian 12 容器里经真实 OpenSSH 与 `systemd --user` 验证（对端 aarch64 原生、x86_64 仿真；hub 为 Linux 远端产品构建与本机 managed-test 构建），尚未在真实 x86_64 主机与 App 持有的产品 managed hub 上验证。发行前须通过锁定源码构建与组 A 契约矩阵。日期：2026-11-25。
+状态：A1–A5 已实现；Linux 远端构建（寻址、生命周期、程序环境、`build-remote.py`）已实现；拨号与版本校验已实现；远端安装与更新（`remote_payloads`、`machine add --install`、`machine update`）已实现，由 Linux 测试与 macOS 脚本化对端验证，并由[端到端脚本](nearshell-remote-e2e.md)在 Debian 12 容器里经真实 OpenSSH 与 `systemd --user` 验证（对端 aarch64 原生、x86_64 仿真；hub 为 Linux 远端产品构建与本机 managed-test 构建），尚未在真实 x86_64 主机与 App 持有的产品 managed hub 上验证。发行前须通过锁定源码构建与组 A 契约矩阵。日期：2026-11-26。
 
 目标：保持默认构建的上游命令与寻址行为，提供独立的 Nearshell 分发身份和私有路径。连接生命周期修复及附加的 build 字段适用于所有构建。
 
@@ -88,7 +88,7 @@ run、keep（替换 shell）与 exec 走上游的 `child_env` 与 exec 环境，
 python3 -B scripts/build-remote.py --commit "$(git rev-parse HEAD)" --patchset <patchset> --release-seq <n> --config dev --bundle-id <bundle-id> --target x86_64-unknown-linux-musl --target aarch64-unknown-linux-musl --output <新目录>
 ```
 
-产出每个目标的 `<输出>/nhc-<target>` 与一个 `manifest.json`。输出目录就是 hub 的 [`remote_payloads`](#载荷目录)，格式见该节；manifest 另记源码 commit、子模块、驱动脚本 hash、工具链与 profile。macOS 上交叉编译、Linux 上原生构建用同一条命令：release profile（strip），rustc 自带的 `rust-lld` 链接，sha1 GNU build id，Cargo home 重映射为 `/nearshell/cargo`；工作区路径本来就是相对路径，因此同一 commit 在同一种主机上换源码目录构建，字节相同。macOS 交叉产物与 Linux 原生产物不保证逐字节相同（两边 `rust-lld` 写入的版本注释与字符串段顺序不同），所以制品只按各自 manifest 的 `sha256` 认定，不跨主机比对。能在本机运行的目标（同架构 Linux）由脚本执行 `build-info --json` 核对；交叉产物的 `build` 按构建参数写入，`executed:false`，真实身份由安装时的候选二进制报告。CI 的 `nearshell.yml` 在 Linux runner 上用 CI 身份原生构建两个目标，打包前核对 manifest 只有本目标一项、`executed:true` 且 `sha256` 与产物一致；`remote` 任务运行 `scripts/check-remote.sh`。
+`build-remote.py --test`（只能与 `build-remote.py --config dev` 同用）得到 nearshell-test 载荷：config 带 `:scratch-test` 后缀，只有 managed-test hub 接受，对端要有 `NEARSHELL_HC_TEST_ROOT`（如 sshd 的 `SetEnv`），不能分发。产出每个目标的 `<输出>/nhc-<target>` 与一个 `manifest.json`。输出目录就是 hub 的 [`remote_payloads`](#载荷目录)，格式见该节；manifest 另记源码 commit、子模块、驱动脚本 hash、工具链与 profile。macOS 上交叉编译、Linux 上原生构建用同一条命令：release profile（strip），rustc 自带的 `rust-lld` 链接，sha1 GNU build id，Cargo home 重映射为 `/nearshell/cargo`；工作区路径本来就是相对路径，因此同一 commit 在同一种主机上换源码目录构建，字节相同。macOS 交叉产物与 Linux 原生产物不保证逐字节相同（两边 `rust-lld` 写入的版本注释与字符串段顺序不同），所以制品只按各自 manifest 的 `sha256` 认定，不跨主机比对。能在本机运行的目标（同架构 Linux）由脚本执行 `build-info --json` 核对；交叉产物的 `build` 按构建参数写入，`executed:false`，真实身份由安装时的候选二进制报告。CI 的 `nearshell.yml` 在 Linux runner 上用 CI 身份原生构建两个目标，打包前核对 manifest 只有本目标一项、`executed:true` 且 `sha256` 与产物一致；`remote` 任务运行 `scripts/check-remote.sh`。
 
 ## 机器：拨号与版本校验
 
@@ -185,10 +185,10 @@ hub 只读 `schemaVersion`、`entries` 的 `target`、`file`、`bytes`、`sha256
 4. 经 ssh 或 `--via` 的 stdin 发送文件，对端执行（`N` 为字节数，`<hex>` 为 manifest 中 `build` 的 JSON 的 hex 编码）：
 
 ```sh
-sh -c 'umask 077; unset HC_SESSION HC_SOCKET; d="$HOME/.local/share/nearshell/<bundle-id>/bin"; mkdir -p "$d" || exit 2; t="$d/.nhc.new.$$"; c() { rm -f "$t"; }; trap c EXIT; trap "exit 1" HUP INT TERM; head -c N > "$t"; [ $(($(wc -c < "$t"))) -eq N ] || { echo "the copy arrived incomplete" >&2; exit 3; }; chmod 700 "$t" && "$t" --json install --from "$t" --expect <hex>'
+sh -c 'umask 077; unset HC_SESSION HC_SOCKET; d="$HOME/.local/share/nearshell/<bundle-id>/bin"; mkdir -p "$d" || exit 2; t="$d/.nhc.new.$$"; c() { rm -f "$t"; }; trap c EXIT; trap "exit 1" HUP INT TERM; head -c N > "$t"; [ $(($(wc -c < "$t"))) -eq N ] || { echo "the copy arrived incomplete" >&2; exit 3; }; echo copy arrived; chmod 700 "$t" && "$t" --json install --from "$t" --expect <hex>'
 ```
 
-   这一行不含单引号与反斜杠，在 sh、bash、zsh、dash、ksh、csh、tcsh 作登录 shell 时都按同一语义执行；字节数不足以 3 退出，任何结果下临时文件都被删除。
+   这一行不含单引号与反斜杠，在 sh、bash、zsh、dash、ksh、csh、tcsh 作登录 shell 时都按同一语义执行；字节数不足以 3 退出，任何结果下临时文件都被删除；整份到齐后先打印一行 `copy arrived`（终端里的进度据此进入“启动”一步），结果仍在最后一行。每条对端命令的 ssh 带 `ServerAliveInterval=15`、`ServerAliveCountMax=4`，并有总时限：无输入的命令 60 秒，发送副本 120 秒加字节数按 16 kB/s 计的时间；超时得到 `install_timeout`。ssh 在 CLI 自己的进程组里，超时或 CLI 收到 INT/HUP/TERM 时整组先 TERM、2 秒后 KILL，CLI 随后按收到的信号退出。
 5. 对端的隐藏子命令 `nhc install --from <临时文件> --expect <hex>`（只在远端构建里存在）：`--from` 必须是它自己、位于 `<根>/bin/` 且名字以 `.nhc.new.` 开头；自身身份必须等于 `nhc install … --expect <hex>` 给出的身份；在 `<根>/install.lock` 上取排他 flock（并发安装排队）；删除 pid 已不存在且超过 60 秒未修改的 `.nhc.new.<pid>`；按下表决定是否替换；替换时原子 rename 到 `<根>/bin/nhc`；正在运行的 core 若不是这个身份，经 `server.restart`（终端留在 holder 里）重启到 `<根>/bin/nhc`，再以 `server status` 核对身份。输出 `{build, was, replaced, restarted}`。
 6. hub 核对输出的 `build` 等于 manifest 项的 `build`，然后重拨：`add` 登记的机器必须报告这个 `build`；`update` 每 200 ms 调一次 `machine.connect`，30 秒内必须成为 `connected` 且 `build` 为新身份。
 
@@ -202,7 +202,7 @@ sh -c 'umask 077; unset HC_SESSION HC_SOCKET; d="$HOME/.local/share/nearshell/<b
 | 预期 config，`releaseSeq` 更大 | `machine_newer` |
 | 同序号不同 `commit`/`patchset`，或 config 不同 | `build_conflict` |
 
-`nhc machine update <name>` 对状态为 `machine_newer`、`build_conflict`、`incompatible` 的机器在发送前就返回同名错误码，消息为 `<name>: <why>`，提示同拨号。人读输出：`<target>: installed its remote core (release M)`（`add` 写在 stderr）、`<name>: updated its remote core from release N to M`、`<name>: its remote core is already current (release M)`；重启过 core 时附 `; its terminals kept running`。`--json` 输出 `{build, was, replaced, restarted, machine, state}`。
+`nhc machine update <name>` 对状态为 `machine_newer`、`build_conflict`、`incompatible` 的机器在发送前就返回同名错误码，消息为 `<name>: <why>`，提示同拨号。人读输出：`<target>: installed its remote core (release M)`（`add` 写在 stderr）、`<name>: updated its remote core from release N to M`、`<name>: its remote core is already current (release M)`；重启过 core 时附 `; its terminals kept running`。`--json` 输出 `{build, was, replaced, restarted, machine, state}`。终端里（stdin、stdout、stderr 都是终端且未加 `--json`）`add`、`login`、`update` 逐步显示登录、平台、发送（已发/总量，原地刷新）、启动、等线路，最后一行为 hub 实际到达的状态（`added <name>: installed its remote core (release M); connected`）；未到 `connected` 时以该状态为错误码，消息为 `<做了什么>, but <hub 的状态>`，提示下一步。`--hold` 在结果后等回车，退出码不变；非终端不等待。
 
 登出后保留：远端构建沿用上游的 linger 处理（core 在 systemd 下启动时尝试 `loginctl --no-ask-password enable-linger`，结果出现在 `hello` 与 `server.status` 的 `keeps_running_after_logout`、`logout_linger_user`），不另设机制；`machine add` 与 `machine update` 在对端不能保留时都输出同一条 `sudo loginctl enable-linger -- <user>` 警告。
 
@@ -223,6 +223,7 @@ sh -c 'umask 077; unset HC_SESSION HC_SOCKET; d="$HOME/.local/share/nearshell/<b
 | `build_conflict` | 对端：`on <machine>: the remote core here is built as <config>, not <config>` 或 `on <machine>: another build of release N is here (<commit12> <patchset>; this copy: …)`；`update`：`<name>: <why>` | 同拨号 |
 | `incompatible` | `update`：`<name>: <why>` | 同拨号 |
 | `install_unverified` | `on <machine>: the remote core reports <描述>`；对端：`installed, but after its restart the core here runs <描述\|no core>`；hub：`<name> answers as <build> after its install`、`<name> is <state>[: <why>] after its install` | `its payload <file> says <描述>; write the payloads again`；``check `nhc server status` there; an update retries the restart``；``see `nhc machine ls`; `nhc machine update <name>` tries again`` |
+| `install_timeout` | `<machine> did not finish within <n> s: the link is down or too slow` | ``nothing is replaced there unless a whole copy arrived; check that `ssh <machine>` answers, then run it again`` |
 | `invalid_params` | `install --from takes this nhc itself, sent to <bin> under a temp name`、`the --expect value is not a build identity` | — |
 | `managed_distribution` | 远端构建的 `update`；上游安装器 `machines::install` | 不变 |
 
@@ -236,29 +237,7 @@ sh -c 'umask 077; unset HC_SESSION HC_SOCKET; d="$HOME/.local/share/nearshell/<b
 
 ## 机器：端到端（真实 ssh 与 systemd）
 
-`scripts/e2e-remote.py`（`just remote-e2e …`）在 Docker 里用真实的 OpenSSH 与 `systemd --user` 跑一遍添加、安装、使用、更新与登出；不进 CI。
-
-需要：Docker 能运行特权容器并以 systemd 作 PID 1（`docker run --privileged --cgroupns=private`，已在 OrbStack 上验证）；与 `build-remote.py` 相同的 Rust 工具链、两个 musl 目标与 `ZIG`；第二轮需要 macOS。它从本 checkout 的 HEAD 克隆一份干净源码来构建（未提交的改动不在构建里），身份为 `dev` / `com.nearshell.e2e` / patchset `e2e`，序号 1 与 2。
-
-```sh
-just remote-e2e --work <新目录> [--round a|b] [--arch aarch64|x86_64] [--builds <可复用的构建目录>]
-```
-
-不指定轮次时 macOS 上跑两轮、Linux 上只跑 a；对端架构可重复指定，默认本机架构（其他架构经仿真）；构建目录按 commit 复用。日志在 `<work>/e2e.log`，用户可见的文本汇总在 `<work>/user-visible.txt`。容器与网络结束时都删掉；镜像 `nhc-e2e:<arch>`（Debian 12 + systemd、sshd、tmpreaper）保留供下次使用，`just remote-e2e --remove-images …` 一并删除。密钥在运行时生成到 `<work>/keys`。b 轮另在本机 `/var/tmp/ne2e-*` 下放 hub 的根目录与 ssh 配置（socket 路径要短），结束时删除。
-
-- **a 轮**：两台容器。hub 账户用远端产品构建当 hub，自己的 `~/.ssh`（config、密钥、known_hosts）以普通的 `ssh far` 连对端；对端账户的登录配置导出 `HC_SESSION`/`HC_SOCKET`。依次核对：空账户 `machine add` 得到 `hc_missing`；`add --install`（在伪终端里，人读输出）装上 release 1、打印 linger 警告并 `connected`，`machine ls` 显示对端构建；`run --on`、`read`、`exec`（`NEARSHELL_HC` 与 `PATH` 指向远端根）；不带 marks 的 `attach` 看到输出并以 ctrl+\ 退出；带 marks 的 attach（App 的做法，边读边回 CREDIT，按 App 解析器的规则核对每一帧，见 `scripts/e2e-remote-viewer.py`）应答 `resize_notifications: false`，收到 `paint_begin`（`attach`、`paintGen` 1，hub 报 `display-palette` 时带 `colors`）→ DATA → `paint_end` → 实时输出；对端 core 与 holder 是 `nearshell-serve-*`、`nearshell-hold-*` 用户服务，排在 `nearshell-shutdown-*` 之后，环境里没有 `HC_SESSION`/`HC_SOCKET`，`UnsetEnvironment` 列出这两个；socket 在 `/tmp/nearshell-<uid>-<8 位>/c.sock`，目录 0700；登出后（不开 linger）终端结束；以 root 执行警告里的 `loginctl enable-linger` 后，hub 换到 release 2 得到 `needs_update`，`machine update` 后 `connected` 在 release 2，终端 pid 不变且仍在输出；随后一条带 marks 的流（按终端现有尺寸）在两次断线中保持打开：对端 core `server restart`，线路自动恢复；对端手工换成 release 1 再重启，hub 停在 `needs_update`，流里只有一条 `discontinuity`，`machine update` 换回 release 2 后恢复。每次断线恰好一条 `discontinuity`，其后是 `stitch`、`paintGen` 更大、历史超出可见行数的重绘，再是实时输出（hub 换版本要重启并结束客户端的流，所以流跨的不是前面那次 `machine update`）；关掉全部登录后终端仍在；hub 退回 release 1 时 `machine_newer`，`update` 与 `add --install` 都被拒、对端仍是 release 2；`machine rm` 后对端 core、终端与文件都在。另外三项：会话的 `$HOME` 被登录配置改掉的账户、socket 目录被别的账户抢先建好的账户、`/tmp` 清理工具。
-- **b 轮**：本机的 managed-test hub（脚本充当 owner：持 `owner.lock`、写 verifier 与 `remote_payloads`、`server start --owner-token`）经 `/usr/bin/ssh` 连对端容器（端口只发布到 127.0.0.1）。对端是 nearshell-test 构建，sshd 的 `SetEnv` 让 `NEARSHELL_HC_TEST_ROOT` 等于拨号行用的路径。覆盖添加、安装、`machine login`（ControlMaster）、`ls`、`run`、`read`、两种 attach、对端服务与环境、更新、带 marks 的流跨两次断线（同 a 轮）、降级被拒、`rm`（同时结束共享登录）。
-  - 与产品 managed hub 的差别：owner 是脚本而不是 App（没有 GUI 的 launchd 环境与登录 shell 的 PATH）；测试构建的根目录与 socket 来自 `NEARSHELL_HC_TEST_ROOT`；hub 的 `PATH` 最前面是一个 `ssh` 包装，执行 `/usr/bin/ssh -F <脚本的 config>`（只用脚本生成的密钥与 known_hosts，`IdentityAgent none`），用户的 `~/.ssh`、agent 与钥匙串不会被读写。没有用 `HC_SSH`：managed 的启动环境去掉全部 `HC_*`，它到不了 core。除这个包装外，拨号、安装与 `login` 走的是产品的 `ssh()`（`-S` 共享登录、`ControlMaster`、`-T`、`BatchMode` 等选项）。
-
-已在 Debian 12（systemd 252、OpenSSH 9.2）上看到的行为：
-
-- sshd 给会话的 `$HOME` 就是账户数据库里的 home。若登录配置改了 `$HOME`：`machine add` 得到 `hc_missing`；`add --install` 得到 `invalid_params`（`on <machine>: install --from takes this nhc itself, sent to <账户 home 下的 bin> under a temp name`），临时副本不残留。
-- socket 目录已被别的账户建好：`add --install` 得到 `nearshell_socket_dir`，对端不留文件。
-- 不开 linger 时，最后一个登录结束后用户管理器随即停止（logind 的 `UserStopDelaySec` 为 10 秒），core、holder 与终端一起结束，hub 重连后把终端列为 `finished`（`reason` 为 `stopped_by_restart`）。非 root 账户自己 `loginctl enable-linger` 被 polkit 拒绝（未装 polkit），所以出现警告。
-- `systemd-tmpfiles --clean` 按 `q /tmp … 10d` 清理时删掉过期的普通文件和没人监听的 socket，保留正在监听的 socket 及其目录；`tmpreaper 7d /tmp` 默认不碰 socket；`tmpreaper --all` 删掉 socket 与目录，之后对端 `nhc` 返回 `nearshell_socket_lost`。Debian 自带的 `tmp.conf` 是 `D /tmp 1777 root root -`，不按时间清理。
-- 由 `connect` 新起的 core 在第一次查看 logind 之前就回答 `hello`，曾让 `keeps_running_after_logout` 为空、`add --install` 不打印 linger 警告；现在 core 启动后的 `hello` 与 `server status` 最多等 2 秒，等第一次查看完成。
-
-未覆盖：真实 x86_64 主机（只有仿真）；App 作 owner 的产品 managed hub；使用 pam_namespace 的主机；装有 polkit、允许用户自己开 linger 的主机；交互式 SSH 登录（密码、验证码）。
+`scripts/e2e-remote.py`（`just remote-e2e …`）在 Docker 里经真实 OpenSSH 与 `systemd --user` 验证添加、安装、使用、更新、登出与终端里的流程；不进 CI。用法、各轮覆盖与已观察到的行为见 [nearshell-remote-e2e.md](nearshell-remote-e2e.md)。
 
 ## Managed program environments (P3)
 

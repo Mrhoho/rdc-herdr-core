@@ -208,7 +208,11 @@ not applicable) and `logout_linger_user`, also in hello and server.status.
 `hc machine --help` to configure SSH or `--via <cmd>` connections.
 Without `--name`, SSH machines use the first host label (IPs stay whole),
 shortened to 32 characters with `-2`, `-3`, etc. added if the name is taken
-or looks like a terminal id (`t14` becomes `t14-2`).
+or looks like a terminal id (`t14` becomes `t14-2`) or a machine id (32 hex
+digits, never a name). `machine login`, `update`, `rename` and `rm` also take
+the machine's id. Adding, login and update are a person's flow in a terminal
+(prompts, steps, `--hold`); from a script use `--json`, add `--install` to copy
+it there without asking.
 On Windows, `--via` is a program and its arguments (CommandLineToArgvW split,
 no shell), with the remote line appended as one argument, no console window;
 Unix stays an sh line. For WSL: `hc machine add --via 'wsl.exe -d Ubuntu -e sh -c' --name wsl`.

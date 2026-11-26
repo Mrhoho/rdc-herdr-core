@@ -32,6 +32,18 @@ class RemoteGuards(unittest.TestCase):
             self.assertIn("--features nearshell -p herdr-core --bin nhc --target " + triple, text)
             self.assertNotIn("managed", text)
 
+    def test_a_test_payload_says_so_and_is_never_a_release(self):
+        self.assertEqual(remote.expected_build("a" * 40, "p", 3, "dev", "com.example.dev", test=True)["config"],
+                         "dev:com.example.dev:remote:scratch-test")
+        command = remote.cargo_command("x86_64-unknown-linux-musl", pathlib.Path("/c"), pathlib.Path("/h"),
+                                       "nearshell-test")
+        self.assertIn("--features nearshell-test -p herdr-core", " ".join(command))
+        argv = ["build-remote.py", "--commit", "a" * 40, "--patchset", "p", "--release-seq", "1", "--config",
+                "release", "--bundle-id", "com.example", "--target", "x86_64-unknown-linux-musl",
+                "--output", "/nonexistent/out", "--test"]
+        with mock.patch.object(remote.sys, "argv", argv), self.assertRaisesRegex(ValueError, "never a test"):
+            remote.main()
+
     def test_only_a_matching_linux_host_runs_the_product(self):
         for system, machine, triple, runs in [("Linux", "x86_64", "x86_64-unknown-linux-musl", True),
                                               ("Linux", "aarch64", "aarch64-unknown-linux-musl", True),

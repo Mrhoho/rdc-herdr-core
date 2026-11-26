@@ -99,9 +99,9 @@ fn scratch_build_has_no_production_fallback_and_cannot_install_upstream() {
     };
     let to = herdr_core::machines::Reach { target: "example.invalid", via: false };
     // Upstream's installer (a download, ~/.local/bin, an hc link) stays refused.
-    assert_eq!(herdr_core::machines::install(&paths, to, None).unwrap_err().kind, "managed_distribution");
+    assert_eq!(herdr_core::machines::install(&paths, to, None, &mut |_| {}).unwrap_err().kind, "managed_distribution");
     // Nearshell's own takes only the payloads its config names: none, so nothing is dialled.
-    assert_eq!(herdr_core::machines::deliver(&paths, to).unwrap_err().kind, "remote_payloads_unset");
+    assert_eq!(herdr_core::machines::deliver(&paths, to, &mut |_| {}).unwrap_err().kind, "remote_payloads_unset");
 }
 
 fn read_eventually(path: &std::path::Path) -> String {

@@ -250,6 +250,17 @@ under the new one, removed before their `removed`. Filtered subscriptions,
 cores that dialed in, and waits inside the core hear none of this, and a
 machine that is itself a hub does not pass its own machines on.
 
+A machine speaks only for its own terminals. A record or terminal event it
+sends whose address is not under its name here (`rohan/t3`) is dropped: it is
+not listed, waited on or told to anyone, so it can neither stand in for a
+terminal here or on another machine nor remove one. Any other address in what
+it sends that is not one of its own becomes null, except `parent` naming a
+terminal here that started a run on that machine. A `record` it puts in an
+event's data is dropped: subscribers here get the record this core keeps. `machine.connect`,
+`machine.rename` and `machine.rm` take `machine` as the name or the `id`. A
+name is never 32 hex digits nor another machine's id: `machine.add` and
+`machine.rename` fail with `invalid_params` for one.
+
 `synced: true` means this core's terminals for that machine are exactly the
 ones there now. It is false while the line is down, held or connecting, after
 this core starts (it knows none of them until the line is up), and while a

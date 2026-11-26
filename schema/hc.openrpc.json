@@ -4410,11 +4410,11 @@
           }
         },
         {
-          "description": "How ssh reaches it: `vps`, `can@10.0.0.7`, `can@10.0.0.7:2222`, a Host from ~/.ssh/config.",
+          "description": "How ssh reaches it: `vps`, `can@10.0.0.7`, `can@10.0.0.7:2222`, a Host from ~/.ssh/config.\nNeeded unless --via; a person in a terminal is asked for it.",
           "name": "target",
           "required": false,
           "schema": {
-            "description": "How ssh reaches it: `vps`, `can@10.0.0.7`, `can@10.0.0.7:2222`, a Host from ~/.ssh/config.",
+            "description": "How ssh reaches it: `vps`, `can@10.0.0.7`, `can@10.0.0.7:2222`, a Host from ~/.ssh/config.\nNeeded unless --via; a person in a terminal is asked for it.",
             "type": [
               "string",
               "null"
@@ -4479,11 +4479,11 @@
       "paramStructure": "by-name",
       "params": [
         {
-          "description": "The machine's name.",
+          "description": "The machine's name, or its id (which stays when it is renamed).",
           "name": "machine",
           "required": true,
           "schema": {
-            "description": "The machine's name.",
+            "description": "The machine's name, or its id (which stays when it is renamed).",
             "type": "string"
           }
         }
@@ -4524,11 +4524,11 @@
       "paramStructure": "by-name",
       "params": [
         {
-          "description": "The machine's name now.",
+          "description": "The machine's name now, or its id.",
           "name": "machine",
           "required": true,
           "schema": {
-            "description": "The machine's name now.",
+            "description": "The machine's name now, or its id.",
             "type": "string"
           }
         },
@@ -4564,11 +4564,11 @@
       "paramStructure": "by-name",
       "params": [
         {
-          "description": "The machine's name.",
+          "description": "The machine's name, or its id (which stays when it is renamed).",
           "name": "machine",
           "required": true,
           "schema": {
-            "description": "The machine's name.",
+            "description": "The machine's name, or its id (which stays when it is renamed).",
             "type": "string"
           }
         }

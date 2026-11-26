@@ -596,6 +596,69 @@ impl ExecGroup {
     }
 }
 
+/// A child of the CLI in a process group of its own, so it can be ended with
+/// whatever it started (`end_group`).
+pub fn own_group(cmd: &mut std::process::Command) {
+    std::os::unix::process::CommandExt::process_group(cmd, 0);
+}
+
+/// Ends a child started with `own_group`, and its group: asked first (ssh
+/// ends what it started), then killed after two seconds.
+pub fn end_group(child: &mut std::process::Child) {
+    let group = -(child.id() as i32);
+    unsafe { libc::kill(group, libc::SIGTERM) };
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while matches!(child.try_wait(), Ok(None)) && std::time::Instant::now() < end {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    unsafe { libc::kill(group, libc::SIGKILL) };
+    let _ = child.wait();
+}
+
+const INTERRUPTS: [libc::c_int; 3] = [libc::SIGINT, libc::SIGHUP, libc::SIGTERM];
+static INTERRUPTED: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+extern "C" fn note_interrupt(signal: libc::c_int) {
+    INTERRUPTED.store(signal, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// While it lives, Ctrl-C, a closed terminal or a TERM is only noted (one
+/// ignored stays ignored): the caller ends what it started. Dropped, the
+/// handlers before come back and a noted signal is raised again, so this
+/// process ends as it was asked to.
+pub struct Interrupts([libc::sighandler_t; 3]);
+
+impl Interrupts {
+    pub fn catch() -> Interrupts {
+        INTERRUPTED.store(0, std::sync::atomic::Ordering::SeqCst);
+        Interrupts(INTERRUPTS.map(|signal| unsafe {
+            let before = libc::signal(signal, note_interrupt as *const () as libc::sighandler_t);
+            if before == libc::SIG_IGN {
+                libc::signal(signal, libc::SIG_IGN);
+            }
+            before
+        }))
+    }
+
+    pub fn caught(&self) -> bool {
+        INTERRUPTED.load(std::sync::atomic::Ordering::SeqCst) != 0
+    }
+}
+
+impl Drop for Interrupts {
+    fn drop(&mut self) {
+        for (signal, before) in INTERRUPTS.iter().zip(self.0) {
+            unsafe { libc::signal(*signal, before) };
+        }
+        match INTERRUPTED.swap(0, std::sync::atomic::Ordering::SeqCst) {
+            0 => {}
+            signal => unsafe {
+                libc::raise(signal);
+            },
+        }
+    }
+}
+
 pub fn random_bytes(bytes: &mut [u8]) {
     File::open("/dev/urandom").and_then(|mut f| io::Read::read_exact(&mut f, bytes)).expect("/dev/urandom readable");
 }
